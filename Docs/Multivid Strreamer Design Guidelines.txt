@@ -1,0 +1,211 @@
+﻿Multivid Streamer Design Guidelines
+===================================
+
+Purpose
+-------
+Multivid Streamer is a Windows PC companion application for Multivid Android / VR. Its first role is to let the user choose exactly which local files and directories are included in a local network library, then expose that library to the headset on the same local network.
+
+The streamer must not depend on the Internet for normal use. It is designed for setups such as:
+
+- PC connected to a phone hotspot.
+- Headset connected to the same phone hotspot.
+- PC serving local files directly to the headset.
+
+Core Approach
+-------------
+Phase 1 focuses on library source selection, recursive scanning, and thumbstone metadata. It does not include video thumbnail generation, ffmpeg analysis, transcoding, cloud sync, or media conversion.
+
+The streamer should expose only user-approved files and directories. It must never expose the whole PC, whole drive, user profile, or arbitrary filesystem paths.
+
+Native Windows UI
+-----------------
+Use native Windows dialogs for user selection:
+
+- Add files: native Windows file picker with multi-select enabled.
+- Add folder: native Windows folder picker.
+- Remove source: remove the selected source from the streamer library.
+- Rescan: manually refresh the catalog from the selected sources.
+
+The file picker should filter to supported file types where practical. Folder selection can allow any folder, because the recursive scanner applies the actual inclusion rules.
+
+Library Sources
+---------------
+A library source can be either:
+
+- An individual file selected by the user.
+- A directory selected by the user.
+
+For directory sources, the streamer scans recursively through subdirectories.
+
+The catalog must keep the real absolute Windows path internally, but the headset must never receive the absolute path. The headset receives only stable IDs, relative directories, file names, dates, sizes, extensions, type categories, and local stream URLs.
+
+Supported File Types
+--------------------
+The recursive scan must include only these file categories and ignore everything else.
+
+Videos:
+
+- .mp4
+- .mkv
+- .mov
+- .avi
+- .webm
+- .m4v
+- .ts
+- .mts
+- .m2ts
+- .wmv
+
+Standard images:
+
+- .jpg
+- .jpeg
+- .png
+- .webp
+- .bmp
+- .gif
+
+RAW images:
+
+- .nef
+- .cr2
+- .cr3
+
+Archives:
+
+- .zip
+
+ZIP files are treated as library items in Phase 1. Do not scan inside ZIP archives yet.
+
+Thumbstone Metadata
+-------------------
+In this project, thumbstone means basic file information, not visual thumbnails.
+
+Each catalog item should include at least:
+
+- Stable internal item ID.
+- Source ID.
+- Kind: video, image, or zip.
+- Optional format group, such as standard, raw, or archive.
+- File name.
+- Relative directory inside the selected source.
+- Extension.
+- Size in bytes.
+- Modified UTC timestamp.
+- Stream URL or local API URL.
+
+Example catalog item:
+
+{
+  "id": "item_9ac21",
+  "sourceId": "source_01",
+  "kind": "image",
+  "formatGroup": "raw",
+  "fileName": "DSC_1042.NEF",
+  "directory": "Photos\\SessionVR",
+  "extension": ".nef",
+  "sizeBytes": 48291833,
+  "modifiedUtc": "2026-06-19T18:42:10Z",
+  "streamUrl": "/stream/item_9ac21"
+}
+
+Security Principles
+-------------------
+Security is part of the design from the beginning.
+
+Minimum rules:
+
+- Only serve files from explicitly selected sources.
+- Never reveal absolute Windows paths to the headset.
+- Use internal IDs for streamable items.
+- Validate every stream request against the current catalog.
+- Do not allow path traversal, direct path parameters, or arbitrary filesystem reads.
+- Keep the server local-network oriented.
+- Use pairing/token authentication before exposing catalog or stream endpoints.
+- Provide a way to revoke paired devices later.
+
+For the first local version, HTTP plus token authentication on a protected local hotspot is acceptable. A later version can add local HTTPS/certificate pairing if needed.
+
+Streaming Principles
+--------------------
+Video streaming must be file-based, not live transcoding.
+
+The PC should serve the original files and let the headset decode them. This avoids forcing weaker laptops, such as a Zenbook that struggles with 8K playback, to decode or transcode 8K video.
+
+Stream endpoints must support HTTP Range requests:
+
+- Accept-Ranges: bytes
+- Range: bytes=start-end
+- 206 Partial Content
+- Content-Range
+- Content-Length
+
+Range support is required for large files, seeking, resume behavior, and smooth playback in VR video players.
+
+Network Assumptions
+-------------------
+The intended local network can be:
+
+- Home Wi-Fi.
+- Dedicated Wi-Fi router.
+- Phone hotspot, such as a Samsung S24 Ultra.
+- USB tethering from PC to phone plus phone hotspot to headset, if supported.
+
+The video stream itself should remain local and should not consume mobile data as long as the headset connects to the PC using the PC's local hotspot IP address.
+
+The app should avoid cloud dependencies and should not require Internet access for normal playback.
+
+Phase 1 Scope
+-------------
+Build first:
+
+1. Windows project base for Multivid Streamer.
+2. Native Windows dialogs for selecting files and directories.
+3. Persistent list of selected library sources.
+4. Recursive scanner for selected directories.
+5. File-type filter for video, image, RAW image, and ZIP files.
+6. Thumbstone catalog model.
+7. Local API endpoint for catalog retrieval.
+8. Local stream endpoint that serves catalog items by ID.
+9. HTTP Range support for streamable files.
+10. Basic local security model: pairing/token or equivalent authorization.
+
+Explicitly postpone:
+
+- Thumbnail generation.
+- Video duration/resolution/codec probing.
+- ffmpeg integration.
+- RAW preview generation.
+- Scanning inside ZIP files.
+- Real-time transcoding.
+- Cloud sync.
+- Internet account system.
+
+Future Compatibility
+--------------------
+Design the catalog so visual thumbnails can be added later without breaking the V1 API.
+
+Acceptable future fields:
+
+- thumbnailId
+- thumbnailUrl
+- durationSeconds
+- width
+- height
+- codec
+- bitrate
+
+These fields should be optional and can remain null or absent in Phase 1.
+
+Development Reminder For New Codex Threads
+------------------------------------------
+At the beginning of each new Codex thread or major implementation step, reread this document first. Use it as the project baseline unless the user explicitly changes the direction.
+
+When making implementation choices, prefer:
+
+- Simple local-first behavior.
+- Strict source allowlists.
+- No accidental filesystem exposure.
+- Native Windows user experience.
+- Streaming original files without transcoding.
+- Compatibility with Android/VR playback expectations.

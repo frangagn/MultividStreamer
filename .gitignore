@@ -1,0 +1,21 @@
+## .NET build output
+[Bb]in/
+[Oo]bj/
+artifacts/
+publish/
+
+## Visual Studio / Rider
+.vs/
+.idea/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+## OS cruft
+Thumbs.db
+desktop.ini
+.DS_Store
+
+## Logs / local
+*.log

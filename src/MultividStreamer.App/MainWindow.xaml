@@ -1,0 +1,256 @@
+﻿<Window x:Class="MultividStreamer.App.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        mc:Ignorable="d"
+        Title="Multivid Streamer"
+        Height="720"
+        Width="980"
+        MinHeight="560"
+        MinWidth="760">
+    <DockPanel Margin="18">
+        <Grid DockPanel.Dock="Top" Margin="0,0,0,14">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
+
+            <StackPanel Grid.Column="0">
+                <TextBlock Text="Sources de bibliotheque"
+                           FontSize="22"
+                           FontWeight="SemiBold" />
+                <TextBlock Text="Ajoutez les fichiers et dossiers que Multivid Streamer pourra cataloguer."
+                           Foreground="#555"
+                           Margin="0,4,0,0" />
+            </StackPanel>
+
+            <Button x:Name="AddButton"
+                    Grid.Column="1"
+                    Width="118"
+                    Height="34"
+                    Margin="0,0,8,0"
+                    Click="AddButton_Click">
+                Ajouter...
+            </Button>
+
+            <Button x:Name="RescanButton"
+                    Grid.Column="2"
+                    Width="104"
+                    Height="34"
+                    Margin="0,0,8,0"
+                    Click="RescanButton_Click">
+                Rescan
+            </Button>
+
+            <Button x:Name="RemoveButton"
+                    Grid.Column="3"
+                    Width="104"
+                    Height="34"
+                    Click="RemoveButton_Click">
+                Effacer
+            </Button>
+        </Grid>
+
+        <StackPanel DockPanel.Dock="Bottom" Margin="0,12,0,0">
+            <Border BorderBrush="#D0D0D0"
+                    BorderThickness="1"
+                    Padding="10"
+                    Margin="0,0,0,10">
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="*" />
+                    </Grid.ColumnDefinitions>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                    </Grid.RowDefinitions>
+
+                    <Button x:Name="ApiToggleButton"
+                            Grid.Row="0"
+                            Grid.Column="0"
+                            Width="118"
+                            Height="30"
+                            Margin="0,0,10,8"
+                            Click="ApiToggleButton_Click">
+                        Demarrer API
+                    </Button>
+
+                    <TextBlock x:Name="ApiStatusText"
+                               Grid.Row="0"
+                               Grid.Column="1"
+                               VerticalAlignment="Center"
+                               Foreground="#555" />
+
+
+                    <TextBlock Grid.Row="2"
+                               Grid.Column="0"
+                               Margin="0,0,10,4"
+                               Text="Catalogue" />
+                    <TextBox x:Name="ApiCatalogUrlText"
+                             Grid.Row="2"
+                             Grid.Column="1"
+                             Margin="0,0,0,4"
+                             IsReadOnly="True" />
+
+                    <TextBlock Grid.Row="3"
+                               Grid.Column="0"
+                               Margin="0,0,10,4"
+                               Text="Pairing" />
+                    <StackPanel Grid.Row="3"
+                                Grid.Column="1"
+                                Orientation="Horizontal"
+                                Margin="0,0,0,4">
+                        <Button x:Name="PairingCodeButton"
+                                Width="118"
+                                Height="28"
+                                Margin="0,0,8,0"
+                                Click="PairingCodeButton_Click">
+                            Generer code
+                        </Button>
+                        <TextBox x:Name="PairingCodeText"
+                                 Width="86"
+                                 Margin="0,0,8,0"
+                                 IsReadOnly="True" />
+                        <TextBlock x:Name="PairingCodeStatusText"
+                                   VerticalAlignment="Center"
+                                   Foreground="#555" />
+                    </StackPanel>
+
+                    <TextBlock Grid.Row="4"
+                               Grid.Column="0"
+                               Margin="0,0,10,0"
+                               Text="Token" />
+                    <TextBox x:Name="ApiTokenText"
+                             Grid.Row="4"
+                             Grid.Column="1"
+                             IsReadOnly="True" />
+
+                    <TextBlock Grid.Row="5"
+                               Grid.Column="0"
+                               Margin="0,8,10,4"
+                               Text="Streaming" />
+                    <TextBlock x:Name="StreamDiagnosticsText"
+                               Grid.Row="5"
+                               Grid.Column="1"
+                               Margin="0,8,0,4"
+                               VerticalAlignment="Center"
+                               Foreground="#555"
+                               TextWrapping="Wrap" />
+
+                    <TextBlock Grid.Row="6"
+                               Grid.Column="0"
+                               Margin="0,8,10,0"
+                               Text="Devices" />
+                    <Grid Grid.Row="6"
+                          Grid.Column="1"
+                          Margin="0,8,0,0">
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                        </Grid.RowDefinitions>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+
+                        <TextBlock x:Name="TrustedDeviceStatusText"
+                                   Grid.Row="0"
+                                   Grid.Column="0"
+                                   VerticalAlignment="Center"
+                                   Foreground="#555" />
+                        <Button x:Name="RevokeTrustedDeviceButton"
+                                Grid.Row="0"
+                                Grid.Column="1"
+                                Width="104"
+                                Height="26"
+                                Margin="8,0,0,4"
+                                Click="RevokeTrustedDeviceButton_Click">
+                            Revoquer
+                        </Button>
+
+                        <ListView x:Name="TrustedDevicesList"
+                                  Grid.Row="1"
+                                  Grid.Column="0"
+                                  Grid.ColumnSpan="2"
+                                  Height="92">
+                            <ListView.View>
+                                <GridView>
+                                    <GridViewColumn Header="Nom"
+                                                    Width="220"
+                                                    DisplayMemberBinding="{Binding Name}" />
+                                    <GridViewColumn Header="Ajoute"
+                                                    Width="145"
+                                                    DisplayMemberBinding="{Binding AddedLocalText}" />
+                                    <GridViewColumn Header="Derniere utilisation"
+                                                    Width="160"
+                                                    DisplayMemberBinding="{Binding LastSeenLocalText}" />
+                                    <GridViewColumn Header="Id"
+                                                    Width="240"
+                                                    DisplayMemberBinding="{Binding Id}" />
+                                </GridView>
+                            </ListView.View>
+                        </ListView>
+                    </Grid>
+                </Grid>
+            </Border>
+
+            <Grid>
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
+
+            <TextBlock x:Name="StatusText"
+                       Grid.Column="0"
+                       VerticalAlignment="Center"
+                       Foreground="#555" />
+
+            <TextBlock x:Name="StorePathText"
+                       Grid.Column="1"
+                       VerticalAlignment="Center"
+                       Foreground="#777" />
+            </Grid>
+        </StackPanel>
+
+        <Border BorderBrush="#D0D0D0"
+                BorderThickness="1">
+            <ListView x:Name="SourcesList"
+                      SelectionMode="Extended">
+                <ListView.ItemContainerStyle>
+                    <Style TargetType="ListViewItem">
+                        <Style.Triggers>
+                            <!-- Option A: offline sources are kept and greyed out, not removed. -->
+                            <DataTrigger Binding="{Binding IsAvailable}" Value="False">
+                                <Setter Property="Foreground" Value="#9AA0A6" />
+                                <Setter Property="ToolTip"
+                                        Value="Indisponible (disque debranche ?) - source conservee, elle reviendra quand le disque sera de retour." />
+                            </DataTrigger>
+                        </Style.Triggers>
+                    </Style>
+                </ListView.ItemContainerStyle>
+                <ListView.View>
+                    <GridView>
+                        <GridViewColumn Header="Type"
+                                        Width="95"
+                                        DisplayMemberBinding="{Binding KindLabel}" />
+                        <GridViewColumn Header="Nom"
+                                        Width="230"
+                                        DisplayMemberBinding="{Binding Name}" />
+                        <GridViewColumn Header="Chemin local PC"
+                                        Width="560"
+                                        DisplayMemberBinding="{Binding Path}" />
+                    </GridView>
+                </ListView.View>
+            </ListView>
+        </Border>
+    </DockPanel>
+</Window>

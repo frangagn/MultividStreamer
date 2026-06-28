@@ -1,0 +1,10 @@
+# Normalize line endings for text files.
+* text=auto
+
+# Bundled native tools are large binaries — GitHub rejects files > 100 MB, so
+# track executables via Git LFS (ffmpeg.exe is ~126 MB).
+*.exe filter=lfs diff=lfs merge=lfs -text
+
+# Other binary media that may be added later.
+*.dll filter=lfs diff=lfs merge=lfs -text
+*.mp4 filter=lfs diff=lfs merge=lfs -text

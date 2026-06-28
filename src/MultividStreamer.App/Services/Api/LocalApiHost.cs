@@ -990,8 +990,205 @@ public sealed class LocalApiHost
             return;
         }
 
+        // Formats the headset can't decode (transcode-formats.json) are converted live
+        // and piped through, instead of served as the raw (unplayable) file.
+        if (SupportedMediaTypes.NeedsTranscode(item.AbsolutePath))
+        {
+            await WriteTranscodedStreamAsync(stream, request, item.AbsolutePath);
+            return;
+        }
+
         FileInfo file = new(item.AbsolutePath);
         await WriteFileStreamAsync(stream, request, item.AbsolutePath, file.Length, GetContentType(item.Extension));
+    }
+
+    // === Live transcode =======================================================
+    // Formats the headset can't decode (wmv/flv/... per transcode-formats.json) are
+    // converted on the fly: ffmpeg decodes the source and re-encodes to fragmented MP4,
+    // whose bytes are streamed to the client as they are produced — no temp file, no
+    // "transcode then send". The body uses chunked transfer-encoding because the final
+    // size is unknown up front, which keeps HTTP keep-alive intact.
+    //
+    // Scope: plays from the start, or ?t=<seconds> for a best-effort seek (-ss tolerates
+    // ~1-2s). Byte-range seeking is impossible on a live stream — the headset re-opens
+    // the URL with ?t= to seek (separate, client-side change).
+
+    // POC uses libx264 to isolate "does AVPro accept the piped stream?" from any Intel
+    // QSV driver issue. Once the pipe is validated, switch to Arc hardware encode:
+    //   "-c:v h264_qsv -global_quality 23 -preset veryfast"
+    private const string TranscodeVideoArgs = "-c:v libx264 -preset veryfast -crf 23 -pix_fmt yuv420p";
+    private const string TranscodeAudioArgs = "-c:a aac -b:a 192k";
+
+    private static string? ResolveFfmpegPath()
+    {
+        string path = Path.Combine(AppContext.BaseDirectory, "tools", "ffmpeg.exe");
+        return File.Exists(path) ? path : null;
+    }
+
+    private async Task WriteTranscodedStreamAsync(NetworkStream stream, ApiRequest request, string inputPath)
+    {
+        string? ffmpegPath = ResolveFfmpegPath();
+        if (ffmpegPath == null)
+        {
+            await WriteJsonAsync(stream, HttpStatusCode.InternalServerError, new { error = "ffmpeg_missing" });
+            NotifyStreamDiagnostics(request, HttpStatusCode.InternalServerError, 0, 0, "ffmpeg.exe introuvable dans tools\\");
+            return;
+        }
+
+        double startSeconds = 0;
+        if (request.Query.TryGetValue("t", out string? tValue)
+            && double.TryParse(tValue, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out double parsed)
+            && parsed > 0)
+        {
+            startSeconds = parsed;
+        }
+
+        // -ss BEFORE -i = fast keyframe-accurate input seek (~1-2s tolerance).
+        string seekArg = startSeconds > 0
+            ? $"-ss {startSeconds.ToString(System.Globalization.CultureInfo.InvariantCulture)} "
+            : string.Empty;
+
+        string arguments =
+            "-hide_banner -loglevel error " +
+            seekArg +
+            $"-i \"{inputPath}\" " +
+            TranscodeVideoArgs + " " +
+            TranscodeAudioArgs + " " +
+            "-movflags frag_keyframe+empty_moov+default_base_moof " +
+            "-f mp4 pipe:1";
+
+        // HEAD: announce the response shape without launching ffmpeg.
+        if (IsHead(request))
+        {
+            await WriteTranscodeHeadersAsync(stream);
+            NotifyStreamDiagnostics(request, HttpStatusCode.OK, 0, 0, "HEAD transcode");
+            return;
+        }
+
+        System.Diagnostics.ProcessStartInfo startInfo = new()
+        {
+            FileName = ffmpegPath,
+            Arguments = arguments,
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true
+        };
+
+        System.Diagnostics.Process? process = null;
+        string? clientState = null;
+        long bytesSent = 0;
+        System.Diagnostics.Stopwatch stopwatch = System.Diagnostics.Stopwatch.StartNew();
+        System.Text.StringBuilder stderrTail = new();
+
+        try
+        {
+            process = System.Diagnostics.Process.Start(startInfo);
+            if (process == null)
+            {
+                await WriteJsonAsync(stream, HttpStatusCode.InternalServerError, new { error = "ffmpeg_start_failed" });
+                return;
+            }
+
+            // Drain stderr async so ffmpeg never blocks on a full error pipe, and keep
+            // the last lines for diagnostics (a codec/QSV failure shows up here).
+            process.ErrorDataReceived += (_, e) =>
+            {
+                if (string.IsNullOrEmpty(e.Data))
+                {
+                    return;
+                }
+
+                lock (stderrTail)
+                {
+                    stderrTail.AppendLine(e.Data);
+                    if (stderrTail.Length > 4000)
+                    {
+                        stderrTail.Remove(0, stderrTail.Length - 4000);
+                    }
+                }
+            };
+            process.BeginErrorReadLine();
+
+            await WriteTranscodeHeadersAsync(stream);
+
+            Stream ffmpegOut = process.StandardOutput.BaseStream;
+            byte[] buffer = new byte[StreamBufferSize];
+            byte[] crlf = { (byte)'\r', (byte)'\n' };
+            while (true)
+            {
+                int read = await ffmpegOut.ReadAsync(buffer);
+                if (read == 0)
+                {
+                    break; // ffmpeg finished
+                }
+
+                // Chunked framing: "<hex size>\r\n<data>\r\n".
+                byte[] sizeLine = Encoding.ASCII.GetBytes(read.ToString("X") + "\r\n");
+                await stream.WriteAsync(sizeLine);
+                await stream.WriteAsync(buffer.AsMemory(0, read));
+                await stream.WriteAsync(crlf);
+                bytesSent += read;
+            }
+
+            await stream.WriteAsync(Encoding.ASCII.GetBytes("0\r\n\r\n")); // terminating chunk
+        }
+        catch (IOException exception)
+        {
+            clientState = $"Client closed: {exception.Message}";
+        }
+        catch (ObjectDisposedException exception)
+        {
+            clientState = $"Client closed: {exception.Message}";
+        }
+        finally
+        {
+            stopwatch.Stop();
+            if (process != null)
+            {
+                try
+                {
+                    if (!process.HasExited)
+                    {
+                        process.Kill(entireProcessTree: true);
+                    }
+                }
+                catch (Exception)
+                {
+                    // Best effort — the client is gone or ffmpeg already exited.
+                }
+
+                string tail;
+                lock (stderrTail)
+                {
+                    tail = stderrTail.ToString().Trim();
+                }
+
+                if (clientState == null && !string.IsNullOrEmpty(tail))
+                {
+                    clientState = "ffmpeg: " + tail.Replace("\r", " ").Replace("\n", " ");
+                }
+
+                process.Dispose();
+            }
+
+            NotifyStreamDiagnostics(request, HttpStatusCode.OK, bytesSent,
+                CalculateMbps(bytesSent, stopwatch.Elapsed), clientState ?? "transcode OK");
+        }
+    }
+
+    private static async Task WriteTranscodeHeadersAsync(NetworkStream stream)
+    {
+        string header = string.Join("\r\n",
+            "HTTP/1.1 200 OK",
+            "Content-Type: video/mp4",
+            "Accept-Ranges: none",
+            "Cache-Control: no-store, no-transform",
+            "Transfer-Encoding: chunked",
+            "Connection: keep-alive",
+            string.Empty,
+            string.Empty);
+        await stream.WriteAsync(Encoding.ASCII.GetBytes(header));
     }
 
     private async Task WriteDiagnosticRangeAsync(NetworkStream stream, ApiRequest request)

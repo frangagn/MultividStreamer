@@ -8,4 +8,17 @@
     <UseWPF>true</UseWPF>
   </PropertyGroup>
 
+  <!-- Bundle the ffmpeg toolchain next to the app so live transcode works on any
+       machine without a system-wide ffmpeg. Copied to <output>\tools\. -->
+  <ItemGroup>
+    <Content Include="tools\ffmpeg.exe" Condition="Exists('tools\ffmpeg.exe')">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <Link>tools\ffmpeg.exe</Link>
+    </Content>
+    <Content Include="tools\ffprobe.exe" Condition="Exists('tools\ffprobe.exe')">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <Link>tools\ffprobe.exe</Link>
+    </Content>
+  </ItemGroup>
+
 </Project>

@@ -5,14 +5,16 @@ using MultividStreamer.App.Models;
 namespace MultividStreamer.App.Services;
 
 /// <summary>
-/// Loads/saves the list of extensions to transcode (transcode-formats.json in AppData).
-/// On first run it seeds the file with the defaults so the user can find and edit it.
-/// To add a format later, just edit the JSON — no code change, no recompile.
+/// Loads/saves the transcode config (transcode-formats.json in AppData): which file
+/// extensions to transcode, and which ffmpeg encoder to use. On first run it seeds the
+/// file with the defaults so the user can find and edit it. To add a format or force an
+/// encoder later, just edit the JSON — no code change, no recompile.
 /// </summary>
 public sealed class TranscodeSettingsStore
 {
     // Seeded on first run. wmv/flv are the known formats Quest/AVPro can't decode.
     private static readonly string[] DefaultExtensions = { ".wmv", ".flv" };
+    private const string DefaultEncoder = "auto";
 
     private readonly JsonSerializerOptions jsonOptions = new()
     {
@@ -27,33 +29,48 @@ public sealed class TranscodeSettingsStore
         StorePath = Path.Combine(appData, "Multivid Streamer", "transcode-formats.json");
     }
 
-    public HashSet<string> Load()
+    public TranscodeSettings Load()
     {
         if (!File.Exists(StorePath))
         {
-            Save(DefaultExtensions);
-            return Normalize(DefaultExtensions);
+            TranscodeSettings seeded = new()
+            {
+                TranscodeExtensions = DefaultExtensions.ToList(),
+                Encoder = DefaultEncoder
+            };
+            Save(seeded);
+            return seeded;
         }
 
         try
         {
             string json = File.ReadAllText(StorePath);
             TranscodeSettings? settings = JsonSerializer.Deserialize<TranscodeSettings>(json, jsonOptions);
-            if (settings?.TranscodeExtensions == null || settings.TranscodeExtensions.Count == 0)
+            if (settings == null)
             {
-                return Normalize(DefaultExtensions);
+                return Defaults();
             }
 
-            return Normalize(settings.TranscodeExtensions);
+            if (settings.TranscodeExtensions == null || settings.TranscodeExtensions.Count == 0)
+            {
+                settings.TranscodeExtensions = DefaultExtensions.ToList();
+            }
+
+            if (string.IsNullOrWhiteSpace(settings.Encoder))
+            {
+                settings.Encoder = DefaultEncoder;
+            }
+
+            return settings;
         }
         catch (Exception)
         {
             // Corrupt/unreadable config must never break startup — fall back to defaults.
-            return Normalize(DefaultExtensions);
+            return Defaults();
         }
     }
 
-    public void Save(IEnumerable<string> extensions)
+    public void Save(TranscodeSettings settings)
     {
         string? directory = Path.GetDirectoryName(StorePath);
         if (!string.IsNullOrWhiteSpace(directory))
@@ -61,20 +78,13 @@ public sealed class TranscodeSettingsStore
             Directory.CreateDirectory(directory);
         }
 
-        TranscodeSettings settings = new()
-        {
-            TranscodeExtensions = Normalize(extensions)
-                .OrderBy(extension => extension, StringComparer.OrdinalIgnoreCase)
-                .ToList()
-        };
-
         string json = JsonSerializer.Serialize(settings, jsonOptions);
         File.WriteAllText(StorePath, json);
     }
 
     // Accept "wmv", ".WMV", " .wmv " etc. → normalize to a lowercase, dot-prefixed,
     // de-duplicated set so matching against Path.GetExtension is reliable.
-    private static HashSet<string> Normalize(IEnumerable<string> extensions)
+    public static HashSet<string> NormalizeExtensions(IEnumerable<string> extensions)
     {
         HashSet<string> result = new(StringComparer.OrdinalIgnoreCase);
         foreach (string raw in extensions)
@@ -94,5 +104,14 @@ public sealed class TranscodeSettingsStore
         }
 
         return result;
+    }
+
+    private static TranscodeSettings Defaults()
+    {
+        return new TranscodeSettings
+        {
+            TranscodeExtensions = DefaultExtensions.ToList(),
+            Encoder = DefaultEncoder
+        };
     }
 }

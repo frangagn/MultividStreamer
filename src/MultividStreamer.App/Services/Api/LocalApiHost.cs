@@ -1027,10 +1027,8 @@ public sealed class LocalApiHost
     // ~1-2s). Byte-range seeking is impossible on a live stream — the headset re-opens
     // the URL with ?t= to seek (separate, client-side change).
 
-    // POC uses libx264 to isolate "does AVPro accept the piped stream?" from any Intel
-    // QSV driver issue. Once the pipe is validated, switch to Arc hardware encode:
-    //   "-c:v h264_qsv -global_quality 23 -preset veryfast"
-    private const string TranscodeVideoArgs = "-c:v libx264 -preset veryfast -crf 18 -pix_fmt yuv420p";
+    // The video encoder is chosen per machine by TranscodeEncoder (NVENC/QSV/AMF/CPU),
+    // so the same build uses hardware encode on an RTX desktop, an Arc laptop, etc.
     private const string TranscodeAudioArgs = "-c:a aac -b:a 192k";
 
     private static string? ResolveFfmpegPath()
@@ -1062,11 +1060,13 @@ public sealed class LocalApiHost
             ? $"-ss {startSeconds.ToString(System.Globalization.CultureInfo.InvariantCulture)} "
             : string.Empty;
 
+        TranscodeEncoder.Profile encoder = TranscodeEncoder.Current;
+
         string arguments =
             "-hide_banner -loglevel error " +
             seekArg +
             $"-i \"{inputPath}\" " +
-            TranscodeVideoArgs + " " +
+            encoder.VideoArgs + " " +
             TranscodeAudioArgs + " " +
             "-movflags frag_keyframe+empty_moov+default_base_moof " +
             "-f mp4 pipe:1";
@@ -1187,7 +1187,8 @@ public sealed class LocalApiHost
             }
 
             NotifyStreamDiagnostics(request, HttpStatusCode.OK, bytesSent,
-                CalculateMbps(bytesSent, stopwatch.Elapsed), clientState ?? "transcode OK");
+                CalculateMbps(bytesSent, stopwatch.Elapsed),
+                clientState ?? $"transcode OK [{encoder.DisplayName}]");
         }
     }
 

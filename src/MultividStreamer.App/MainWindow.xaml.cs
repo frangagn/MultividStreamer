@@ -25,8 +25,11 @@ public partial class MainWindow : Window
 
         // Register the transcode formats first: this makes those extensions count as
         // videos for cataloguing AND flags them for ffmpeg, before the catalog scan or
-        // API host run. Seeds transcode-formats.json on first launch.
-        SupportedMediaTypes.SetTranscodeExtensions(transcodeSettingsStore.Load());
+        // API host run. Seeds transcode-formats.json on first launch. Also kick off
+        // encoder detection (NVENC/QSV/AMF/CPU) so the same build runs optimally here.
+        TranscodeSettings transcodeSettings = transcodeSettingsStore.Load();
+        SupportedMediaTypes.SetTranscodeExtensions(TranscodeSettingsStore.NormalizeExtensions(transcodeSettings.TranscodeExtensions));
+        TranscodeEncoder.Initialize(transcodeSettings.Encoder);
 
         apiSettings = new ApiSettingsStore().LoadOrCreate();
         localApiHost = new LocalApiHost(catalogStore, sourceStore, apiSettings, trustedDeviceStore);

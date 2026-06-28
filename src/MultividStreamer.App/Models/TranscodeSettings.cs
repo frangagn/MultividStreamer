@@ -10,4 +10,10 @@ namespace MultividStreamer.App.Models;
 public sealed class TranscodeSettings
 {
     public List<string> TranscodeExtensions { get; set; } = new();
+
+    // Which ffmpeg encoder to use. "auto" (default) probes the machine and picks the
+    // best working hardware encoder (NVIDIA NVENC > Intel QSV/Arc > AMD AMF), falling
+    // back to CPU x264. Force one with: "nvenc" | "qsv" | "amf" | "cpu". Lets the same
+    // build run optimally on different machines (RTX desktop, Arc laptop, …).
+    public string Encoder { get; set; } = "auto";
 }

@@ -35,10 +35,32 @@ public static class SupportedMediaTypes
         ".cr3"
     };
 
+    // Extra video extensions that the headset can't play natively and that the streamer
+    // transcodes live (loaded from transcode-formats.json at startup via
+    // SetTranscodeExtensions). Treated as normal videos for cataloguing/listing so they
+    // appear in the browser, and flagged by NeedsTranscode so the stream endpoint knows
+    // to pipe them through ffmpeg. Adding an extension to the config is all that's needed.
+    private static HashSet<string> transcodeVideoExtensions = new(StringComparer.OrdinalIgnoreCase);
+
+    public static void SetTranscodeExtensions(IEnumerable<string> extensions)
+    {
+        transcodeVideoExtensions = new HashSet<string>(extensions, StringComparer.OrdinalIgnoreCase);
+    }
+
+    public static bool NeedsTranscode(string path)
+    {
+        return transcodeVideoExtensions.Contains(Path.GetExtension(path));
+    }
+
+    private static bool IsVideoExtension(string extension)
+    {
+        return VideoExtensions.Contains(extension) || transcodeVideoExtensions.Contains(extension);
+    }
+
     public static bool IsSupportedFile(string path)
     {
         string extension = Path.GetExtension(path);
-        return VideoExtensions.Contains(extension)
+        return IsVideoExtension(extension)
             || StandardImageExtensions.Contains(extension)
             || RawImageExtensions.Contains(extension)
             || string.Equals(extension, ".zip", StringComparison.OrdinalIgnoreCase);
@@ -55,7 +77,7 @@ public static class SupportedMediaTypes
     {
         string extension = Path.GetExtension(path);
 
-        if (VideoExtensions.Contains(extension))
+        if (IsVideoExtension(extension))
         {
             kind = "video";
             formatGroup = null;

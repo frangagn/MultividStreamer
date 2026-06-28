@@ -12,6 +12,7 @@ public partial class MainWindow : Window
     private readonly LibrarySourceStore sourceStore = new();
     private readonly CatalogStore catalogStore = new();
     private readonly LibraryCatalogScanner catalogScanner = new();
+    private readonly TranscodeSettingsStore transcodeSettingsStore = new();
     private readonly ApiSettings apiSettings;
     private readonly TrustedDeviceStore trustedDeviceStore = new();
     private readonly LocalApiHost localApiHost;
@@ -21,6 +22,11 @@ public partial class MainWindow : Window
     public MainWindow()
     {
         InitializeComponent();
+
+        // Register the transcode formats first: this makes those extensions count as
+        // videos for cataloguing AND flags them for ffmpeg, before the catalog scan or
+        // API host run. Seeds transcode-formats.json on first launch.
+        SupportedMediaTypes.SetTranscodeExtensions(transcodeSettingsStore.Load());
 
         apiSettings = new ApiSettingsStore().LoadOrCreate();
         localApiHost = new LocalApiHost(catalogStore, sourceStore, apiSettings, trustedDeviceStore);

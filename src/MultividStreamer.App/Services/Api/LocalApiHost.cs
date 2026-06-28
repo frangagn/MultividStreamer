@@ -67,6 +67,11 @@ public sealed class LocalApiHost
     // cleared whenever the catalog changes.
     private readonly ConcurrentDictionary<string, BrowseFolder> discoveredZipFolders = new(StringComparer.Ordinal);
 
+    // ffprobe results (duration/resolution) for /media/{id}/info, keyed by absolute
+    // path. ffprobe is ~50-150ms per file, so cache it: the headset asks once per
+    // playback, and a folder of transcode files would otherwise re-probe repeatedly.
+    private readonly ConcurrentDictionary<string, MediaInfo> mediaInfoCache = new(StringComparer.OrdinalIgnoreCase);
+
     private TcpListener? listener;
     private CancellationTokenSource? cancellationTokenSource;
     private DiscoveryResponder? discoveryResponder;
@@ -379,6 +384,13 @@ public sealed class LocalApiHost
                 return;
             }
 
+            if (path.StartsWith("/media/", StringComparison.OrdinalIgnoreCase) && path.EndsWith("/info", StringComparison.OrdinalIgnoreCase))
+            {
+                string mediaItemId = Uri.UnescapeDataString(path["/media/".Length..^"/info".Length].Trim('/'));
+                await WriteMediaInfoAsync(stream, request, mediaItemId);
+                return;
+            }
+
             await WriteJsonAsync(stream, HttpStatusCode.NotFound, new { error = "not_found" });
         }
         catch (Exception exception)
@@ -525,6 +537,8 @@ public sealed class LocalApiHost
                 browseRoot = "/browse/root",
                 browse = "/browse?folderId={folderId}&limit={limit}&cursor={cursor}",
                 stream = "/stream/{itemId}",
+                streamSeek = "/stream/{itemId}?t={seconds}",
+                mediaInfo = "/media/{itemId}/info",
                 diagnosticsRange = "/diagnostics/range",
                 zipItems = "/zip/{zipItemId}/items"
             }
@@ -1016,7 +1030,7 @@ public sealed class LocalApiHost
     // POC uses libx264 to isolate "does AVPro accept the piped stream?" from any Intel
     // QSV driver issue. Once the pipe is validated, switch to Arc hardware encode:
     //   "-c:v h264_qsv -global_quality 23 -preset veryfast"
-    private const string TranscodeVideoArgs = "-c:v libx264 -preset veryfast -crf 23 -pix_fmt yuv420p";
+    private const string TranscodeVideoArgs = "-c:v libx264 -preset veryfast -crf 18 -pix_fmt yuv420p";
     private const string TranscodeAudioArgs = "-c:a aac -b:a 192k";
 
     private static string? ResolveFfmpegPath()
@@ -1189,6 +1203,132 @@ public sealed class LocalApiHost
             string.Empty,
             string.Empty);
         await stream.WriteAsync(Encoding.ASCII.GetBytes(header));
+    }
+
+    // Media metadata for the headset: duration is essential for transcoded items
+    // because a live (fragmented, empty-moov) stream carries no total duration, so the
+    // headset can't position its scrubber without it. Resolution is informational.
+    private async Task WriteMediaInfoAsync(NetworkStream stream, ApiRequest request, string itemId)
+    {
+        CatalogItem? item = FindCatalogItem(itemId);
+        if (item == null || string.IsNullOrWhiteSpace(item.AbsolutePath) || !File.Exists(item.AbsolutePath))
+        {
+            await WriteJsonAsync(stream, HttpStatusCode.NotFound, new { error = "not_found" });
+            return;
+        }
+
+        MediaInfo? info = await ProbeMediaAsync(item.AbsolutePath);
+
+        await WriteJsonAsync(stream, HttpStatusCode.OK, new
+        {
+            id = item.Id,
+            needsTranscode = SupportedMediaTypes.NeedsTranscode(item.FileName),
+            durationSeconds = info?.DurationSeconds,
+            width = info?.Width,
+            height = info?.Height
+        });
+    }
+
+    private static string? ResolveFfprobePath()
+    {
+        string path = Path.Combine(AppContext.BaseDirectory, "tools", "ffprobe.exe");
+        return File.Exists(path) ? path : null;
+    }
+
+    private async Task<MediaInfo?> ProbeMediaAsync(string inputPath)
+    {
+        if (mediaInfoCache.TryGetValue(inputPath, out MediaInfo? cached))
+        {
+            return cached;
+        }
+
+        string? ffprobePath = ResolveFfprobePath();
+        if (ffprobePath == null)
+        {
+            return null;
+        }
+
+        System.Diagnostics.ProcessStartInfo startInfo = new()
+        {
+            FileName = ffprobePath,
+            Arguments = "-v error -select_streams v:0 "
+                + "-show_entries format=duration:stream=width,height "
+                + $"-of json \"{inputPath}\"",
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true
+        };
+
+        try
+        {
+            using System.Diagnostics.Process? process = System.Diagnostics.Process.Start(startInfo);
+            if (process == null)
+            {
+                return null;
+            }
+
+            string json = await process.StandardOutput.ReadToEndAsync();
+            await process.WaitForExitAsync();
+
+            MediaInfo? info = ParseFfprobeJson(json);
+            if (info != null)
+            {
+                mediaInfoCache[inputPath] = info;
+            }
+
+            return info;
+        }
+        catch (Exception)
+        {
+            return null;
+        }
+    }
+
+    private static MediaInfo? ParseFfprobeJson(string json)
+    {
+        if (string.IsNullOrWhiteSpace(json))
+        {
+            return null;
+        }
+
+        try
+        {
+            using JsonDocument document = JsonDocument.Parse(json);
+            JsonElement root = document.RootElement;
+
+            double? duration = null;
+            if (root.TryGetProperty("format", out JsonElement format)
+                && format.TryGetProperty("duration", out JsonElement durationElement)
+                && double.TryParse(durationElement.GetString(), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out double parsedDuration))
+            {
+                duration = parsedDuration;
+            }
+
+            int? width = null;
+            int? height = null;
+            if (root.TryGetProperty("streams", out JsonElement streams)
+                && streams.ValueKind == JsonValueKind.Array
+                && streams.GetArrayLength() > 0)
+            {
+                JsonElement firstStream = streams[0];
+                if (firstStream.TryGetProperty("width", out JsonElement widthElement) && widthElement.TryGetInt32(out int parsedWidth))
+                {
+                    width = parsedWidth;
+                }
+
+                if (firstStream.TryGetProperty("height", out JsonElement heightElement) && heightElement.TryGetInt32(out int parsedHeight))
+                {
+                    height = parsedHeight;
+                }
+            }
+
+            return new MediaInfo(duration, width, height);
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
     }
 
     private async Task WriteDiagnosticRangeAsync(NetworkStream stream, ApiRequest request)
@@ -1633,7 +1773,8 @@ public sealed class LocalApiHost
             modifiedUtc: item.ModifiedUtc,
             browseUrl: null,
             streamUrl: item.StreamUrl,
-            itemCount: null);
+            itemCount: null,
+            needsTranscode: SupportedMediaTypes.NeedsTranscode(item.FileName));
     }
 
     private static BrowseEntry ToZipEntryBrowseEntry(PublicZipEntryItem item, string parentId)
@@ -2082,7 +2223,8 @@ public sealed class LocalApiHost
             Extension = item.Extension,
             SizeBytes = item.SizeBytes,
             ModifiedUtc = item.ModifiedUtc,
-            StreamUrl = AddTokenToStreamUrl(item.StreamUrl, token)
+            StreamUrl = AddTokenToStreamUrl(item.StreamUrl, token),
+            NeedsTranscode = SupportedMediaTypes.NeedsTranscode(item.FileName)
         };
     }
 
@@ -2155,6 +2297,8 @@ public sealed class LocalApiHost
 
     private readonly record struct StreamRange(long Start, long End);
 
+    private sealed record MediaInfo(double? DurationSeconds, int? Width, int? Height);
+
     private readonly record struct StreamCopyResult(long BytesSent, string? ClientState);
 
     private enum BrowseFolderKind
@@ -2191,7 +2335,8 @@ public sealed class LocalApiHost
         DateTime? modifiedUtc,
         string? browseUrl,
         string? streamUrl,
-        int? itemCount);
+        int? itemCount,
+        bool needsTranscode = false);
 
     private sealed record BrowsePage(
         int cursor,

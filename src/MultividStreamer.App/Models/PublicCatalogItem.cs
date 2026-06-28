@@ -21,4 +21,9 @@ public sealed class PublicCatalogItem
     public required DateTime ModifiedUtc { get; init; }
 
     public required string StreamUrl { get; init; }
+
+    // True when the headset can't decode this format natively and the streamer will
+    // transcode it live. The headset uses this to switch to time-based (?t=) seeking
+    // and to fetch the duration from /media/{id}/info.
+    public bool NeedsTranscode { get; init; }
 }

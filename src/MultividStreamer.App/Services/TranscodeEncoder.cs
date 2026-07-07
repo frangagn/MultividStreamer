@@ -19,12 +19,18 @@ public static class TranscodeEncoder
     public sealed record Profile(string Key, string DisplayName, string Codec, string VideoArgs);
 
     // Preference order: hardware first (quality/CPU win), CPU x264 last (always works).
+    //
+    // -g 60 (short GOP, ~2s) everywhere: the fMP4 muxer (frag_keyframe) can only flush
+    // a fragment when the NEXT keyframe arrives, so startup latency ≈ one full GOP of
+    // encode time. The encoder defaults (~250 frames) made transcoded streams take
+    // 8-10s to show their first frame. x264 also needs -sc_threshold 0 so scene-cut
+    // keyframes don't make fragments irregular.
     private static readonly Profile[] Profiles =
     {
-        new("nvenc", "NVIDIA NVENC", "h264_nvenc", "-c:v h264_nvenc -preset p5 -rc vbr -cq 19 -pix_fmt yuv420p"),
-        new("qsv",   "Intel QSV/Arc", "h264_qsv",  "-c:v h264_qsv -global_quality 20 -preset veryslow"),
-        new("amf",   "AMD AMF",      "h264_amf",   "-c:v h264_amf -quality quality -rc cqp -qp_i 20 -qp_p 20 -pix_fmt yuv420p"),
-        new("cpu",   "CPU x264",     "libx264",    "-c:v libx264 -preset veryfast -crf 18 -pix_fmt yuv420p"),
+        new("nvenc", "NVIDIA NVENC", "h264_nvenc", "-c:v h264_nvenc -preset p5 -rc vbr -cq 19 -g 60 -pix_fmt yuv420p"),
+        new("qsv",   "Intel QSV/Arc", "h264_qsv",  "-c:v h264_qsv -global_quality 20 -preset veryslow -g 60"),
+        new("amf",   "AMD AMF",      "h264_amf",   "-c:v h264_amf -quality quality -rc cqp -qp_i 20 -qp_p 20 -g 60 -pix_fmt yuv420p"),
+        new("cpu",   "CPU x264",     "libx264",    "-c:v libx264 -preset veryfast -crf 18 -g 60 -sc_threshold 0 -pix_fmt yuv420p"),
     };
 
     private static readonly Profile CpuFallback = Profiles[^1];

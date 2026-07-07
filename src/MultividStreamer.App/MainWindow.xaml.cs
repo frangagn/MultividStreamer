@@ -1,5 +1,6 @@
 ﻿using System.Collections.ObjectModel;
 using System.Windows;
+using System.Windows.Threading;
 using MultividStreamer.App.Models;
 using MultividStreamer.App.Selection;
 using MultividStreamer.App.Services;
@@ -18,6 +19,16 @@ public partial class MainWindow : Window
     private readonly LocalApiHost localApiHost;
     private readonly ObservableCollection<LibrarySource> sources;
     private readonly ObservableCollection<TrustedDevice> trustedDevices;
+
+    // While the API runs, a pairing code is always active and rotates on this timer
+    // (same period as the code's validity), so the headset can pair at any moment
+    // without someone clicking "Generer code" on the PC first.
+    private readonly DispatcherTimer pairingRotationTimer = new()
+    {
+        Interval = TimeSpan.FromMinutes(LocalApiHost.PairingCodeLifetimeMinutes)
+    };
+
+    private bool startupPromptShown;
 
     public MainWindow()
     {
@@ -46,9 +57,67 @@ public partial class MainWindow : Window
         StorePathText.Text = sourceStore.StorePath;
         ApiTokenText.Text = localApiHost.Token;
         StreamDiagnosticsText.Text = "Aucune lecture";
+        pairingRotationTimer.Tick += (_, _) => RotatePairingCode();
+        ContentRendered += MainWindow_ContentRendered;
         UpdateTrustedDeviceStatus();
         UpdateApiStatus();
         UpdateStatus();
+    }
+
+    // First thing after the window shows: offer to start serving right away. Forgetting
+    // to click "Demarrer API" is the #1 reason the headset "can't find" the streamer.
+    private void MainWindow_ContentRendered(object? sender, EventArgs e)
+    {
+        if (startupPromptShown)
+        {
+            return;
+        }
+
+        startupPromptShown = true;
+
+        MessageBoxResult result = MessageBox.Show(
+            this,
+            "Start Network Broadcast?",
+            "Multivid Streamer",
+            MessageBoxButton.YesNo,
+            MessageBoxImage.Question);
+
+        if (result == MessageBoxResult.Yes)
+        {
+            StartApi();
+        }
+    }
+
+    private void StartApi()
+    {
+        localApiHost.Start();
+        RotatePairingCode();
+        UpdateApiStatus();
+    }
+
+    private void StopApi()
+    {
+        pairingRotationTimer.Stop();
+        localApiHost.CancelPairing();
+        localApiHost.Stop();
+        UpdateApiStatus();
+    }
+
+    // Issues a fresh pairing code and restarts the rotation window. Called when the
+    // API starts, every PairingCodeLifetimeMinutes, when a headset consumes the code
+    // by pairing, and on the manual "Generer code" button.
+    private void RotatePairingCode()
+    {
+        if (!localApiHost.IsRunning)
+        {
+            pairingRotationTimer.Stop();
+            return;
+        }
+
+        PairingCodeText.Text = localApiHost.StartPairing();
+        UpdatePairingStatus();
+        pairingRotationTimer.Stop();
+        pairingRotationTimer.Start();
     }
 
     private async void AddButton_Click(object sender, RoutedEventArgs e)
@@ -185,14 +254,12 @@ public partial class MainWindow : Window
         {
             if (localApiHost.IsRunning)
             {
-                localApiHost.Stop();
+                StopApi();
             }
             else
             {
-                localApiHost.Start();
+                StartApi();
             }
-
-            UpdateApiStatus();
         }
         catch (Exception exception)
         {
@@ -208,9 +275,29 @@ public partial class MainWindow : Window
             return;
         }
 
-        string code = localApiHost.StartPairing();
-        PairingCodeText.Text = code;
-        UpdatePairingStatus();
+        RotatePairingCode();
+    }
+
+    private void ClearLibraryButton_Click(object sender, RoutedEventArgs e)
+    {
+        TypedConfirmationDialog dialog = new(
+            "Multivid Streamer",
+            "Do you really want to clear the whole library?",
+            "Yes")
+        {
+            Owner = this
+        };
+
+        if (dialog.ShowDialog() != true)
+        {
+            return;
+        }
+
+        // Sources + catalogue only: trusted headsets stay paired.
+        sources.Clear();
+        SaveSources();
+        catalogStore.Save(Array.Empty<CatalogItem>());
+        UpdateStatus("Bibliotheque videe.");
     }
 
     private void RevokeTrustedDeviceButton_Click(object sender, RoutedEventArgs e)
@@ -243,7 +330,17 @@ public partial class MainWindow : Window
 
     private void LocalApiHost_TrustedDevicesChanged(object? sender, EventArgs e)
     {
-        Dispatcher.Invoke(RefreshTrustedDevices);
+        Dispatcher.Invoke(() =>
+        {
+            RefreshTrustedDevices();
+
+            // A successful pairing consumes the active code server-side; issue a new
+            // one right away so the "always a valid code" invariant holds.
+            if (localApiHost.IsRunning)
+            {
+                RotatePairingCode();
+            }
+        });
     }
 
     // Rolling activity log shown in the "Streaming" area, fed by both the detailed
@@ -307,6 +404,7 @@ public partial class MainWindow : Window
         AddButton.IsEnabled = !isBusy;
         RescanButton.IsEnabled = !isBusy;
         RemoveButton.IsEnabled = !isBusy;
+        ClearLibraryButton.IsEnabled = !isBusy;
         ApiToggleButton.IsEnabled = !isBusy;
         PairingCodeButton.IsEnabled = !isBusy && localApiHost.IsRunning;
         RevokeTrustedDeviceButton.IsEnabled = !isBusy;
@@ -338,7 +436,7 @@ public partial class MainWindow : Window
         PairingCodeText.Text = code ?? string.Empty;
         PairingCodeStatusText.Text = code == null || expiresUtc == null
             ? "Aucun code actif"
-            : $"Expire a {expiresUtc.Value.ToLocalTime():HH:mm}";
+            : $"Nouveau code a {expiresUtc.Value.ToLocalTime():HH:mm}";
     }
 
     private void UpdateTrustedDeviceStatus()

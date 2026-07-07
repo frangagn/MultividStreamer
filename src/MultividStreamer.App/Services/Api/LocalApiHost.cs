@@ -137,12 +137,16 @@ public sealed class LocalApiHost
         }
     }
 
+    // A pairing code stays valid this long. The UI rotates the code on the same
+    // period, so while the API runs a fresh code is always active and displayed.
+    public const int PairingCodeLifetimeMinutes = 15;
+
     public string StartPairing()
     {
         lock (pairingLock)
         {
             pairingCode = RandomNumberGenerator.GetInt32(100000, 1000000).ToString();
-            pairingExpiresUtc = DateTime.UtcNow.AddMinutes(5);
+            pairingExpiresUtc = DateTime.UtcNow.AddMinutes(PairingCodeLifetimeMinutes);
             return pairingCode;
         }
     }
@@ -1005,8 +1009,13 @@ public sealed class LocalApiHost
         }
 
         // Formats the headset can't decode (transcode-formats.json) are converted live
-        // and piped through, instead of served as the raw (unplayable) file.
-        if (SupportedMediaTypes.NeedsTranscode(item.AbsolutePath))
+        // and piped through, instead of served as the raw (unplayable) file. The headset
+        // can also force this for a nominally playable file that decodes badly on device
+        // ("try transcoding" action) by adding ?transcode=1.
+        bool forceTranscode = request.Query.TryGetValue("transcode", out string? transcodeFlag)
+            && (transcodeFlag == "1" || string.Equals(transcodeFlag, "true", StringComparison.OrdinalIgnoreCase));
+
+        if (forceTranscode || SupportedMediaTypes.NeedsTranscode(item.AbsolutePath))
         {
             await WriteTranscodedStreamAsync(stream, request, item.AbsolutePath);
             return;

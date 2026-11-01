@@ -375,6 +375,13 @@ public sealed class LocalApiHost
                 return;
             }
 
+            if (path.StartsWith("/thumb/", StringComparison.OrdinalIgnoreCase))
+            {
+                string thumbItemId = Uri.UnescapeDataString(path["/thumb/".Length..]);
+                await WriteThumbnailAsync(stream, request, thumbItemId);
+                return;
+            }
+
             if (isDiagnosticRangePath)
             {
                 await WriteDiagnosticRangeAsync(stream, request);
@@ -525,6 +532,8 @@ public sealed class LocalApiHost
             {
                 browse = true,
                 browsePagination = true,
+                browseKindFilter = true,
+                browseKinds = new[] { "video", "image", "zip" },
                 streamById = true,
                 streamRange = true,
                 diagnosticsRange = true,
@@ -539,7 +548,7 @@ public sealed class LocalApiHost
                 serverInfo = "/server/info",
                 pairClaim = "/pair/claim?code={code}&deviceName={deviceName}",
                 browseRoot = "/browse/root",
-                browse = "/browse?folderId={folderId}&limit={limit}&cursor={cursor}",
+                browse = "/browse?folderId={folderId}&kinds={kinds}&limit={limit}&cursor={cursor}",
                 stream = "/stream/{itemId}",
                 streamSeek = "/stream/{itemId}?t={seconds}",
                 mediaInfo = "/media/{itemId}/info",
@@ -681,6 +690,11 @@ public sealed class LocalApiHost
 
         BrowseFolder folder = resolved.Value.folder;
         List<BrowseEntry> entries = AddTokenToStreamUrls(resolved.Value.entries, GetRequestToken(request));
+        // Server-side type filter: when the client passes ?kinds=video|image|zip
+        // (comma-separated), only matching file entries are returned. Folders are
+        // always kept so the user can still navigate. AddTokenToStreamUrls already
+        // produced a fresh list, so filtering here never mutates the browse cache.
+        entries = FilterEntriesByKinds(entries, ParseKinds(request));
         BrowsePage page = CreateBrowsePage(entries, request);
         NotifyStreamDiagnostics(request, HttpStatusCode.OK, 0, 0,
             $"BROWSE {(string.IsNullOrEmpty(folder.directory) ? folder.name : folder.directory)} -> {entries.Count} items");
@@ -1023,6 +1037,180 @@ public sealed class LocalApiHost
 
         FileInfo file = new(item.AbsolutePath);
         await WriteFileStreamAsync(stream, request, item.AbsolutePath, file.Length, GetContentType(item.Extension));
+    }
+
+    // === Thumbnails ===========================================================
+    // GET /thumb/{itemId}?t={seconds}&w={maxDim}
+    // Génère (ou ressert depuis le cache PC) une petite JPEG pour une vidéo OU une
+    // image, via le ffmpeg déjà embarqué. Le casque télécharge cette image au lieu
+    // d'ouvrir la vidéo et d'en extraire une frame (~1 s). Additif : ne touche pas
+    // au streaming existant.
+
+    private static string? thumbnailCacheDir;
+
+    private static string? ThumbnailCacheDir()
+    {
+        if (thumbnailCacheDir != null)
+        {
+            return thumbnailCacheDir;
+        }
+
+        try
+        {
+            string dir = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "MultividStreamer", "thumbcache");
+            Directory.CreateDirectory(dir);
+            thumbnailCacheDir = dir;
+        }
+        catch
+        {
+            thumbnailCacheDir = null;
+        }
+
+        return thumbnailCacheDir;
+    }
+
+    private static string ThumbnailCacheKey(CatalogItem item, double seconds, int maxDim, bool isVideo)
+    {
+        string raw = $"{item.AbsolutePath}|{item.ModifiedUtc.Ticks}|{seconds.ToString("F2", System.Globalization.CultureInfo.InvariantCulture)}|{maxDim}|{(isVideo ? "v" : "i")}";
+        using System.Security.Cryptography.SHA1 sha = System.Security.Cryptography.SHA1.Create();
+        byte[] hash = sha.ComputeHash(System.Text.Encoding.UTF8.GetBytes(raw));
+        return Convert.ToHexString(hash).ToLowerInvariant();
+    }
+
+    private async Task WriteThumbnailAsync(NetworkStream stream, ApiRequest request, string itemId)
+    {
+        if (string.IsNullOrWhiteSpace(itemId) || itemId.Contains('/'))
+        {
+            await WriteJsonAsync(stream, HttpStatusCode.NotFound, new { error = "not_found" });
+            return;
+        }
+
+        CatalogItem? item = FindCatalogItem(itemId);
+        if (item == null || string.IsNullOrWhiteSpace(item.AbsolutePath) || !File.Exists(item.AbsolutePath))
+        {
+            await WriteJsonAsync(stream, HttpStatusCode.NotFound, new { error = "not_found" });
+            return;
+        }
+
+        bool isVideo = string.Equals(item.Kind, "video", StringComparison.OrdinalIgnoreCase);
+
+        double seconds = 3.0;
+        if (request.Query.TryGetValue("t", out string? tValue)
+            && double.TryParse(tValue, System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out double parsedT)
+            && parsedT >= 0)
+        {
+            seconds = parsedT;
+        }
+
+        int maxDim = 320;
+        if (request.Query.TryGetValue("w", out string? wValue)
+            && int.TryParse(wValue, out int parsedW) && parsedW >= 16 && parsedW <= 1024)
+        {
+            maxDim = parsedW;
+        }
+
+        string? cachePath = await EnsureThumbnailCachedAsync(item, seconds, maxDim, isVideo);
+        if (cachePath == null || !File.Exists(cachePath))
+        {
+            await WriteJsonAsync(stream, HttpStatusCode.InternalServerError, new { error = "thumb_failed" });
+            return;
+        }
+
+        FileInfo fi = new(cachePath);
+        await WriteFileStreamAsync(stream, request, cachePath, fi.Length, "image/jpeg");
+    }
+
+    private async Task<string?> EnsureThumbnailCachedAsync(CatalogItem item, double seconds, int maxDim, bool isVideo)
+    {
+        string? dir = ThumbnailCacheDir();
+        if (dir == null)
+        {
+            return null;
+        }
+
+        string outPath = Path.Combine(dir, ThumbnailCacheKey(item, seconds, maxDim, isVideo) + ".jpg");
+        if (File.Exists(outPath))
+        {
+            return outPath;
+        }
+
+        string? ffmpegPath = ResolveFfmpegPath();
+        if (ffmpegPath == null)
+        {
+            return null;
+        }
+
+        string tmpPath = outPath + "." + Guid.NewGuid().ToString("N") + ".tmp";
+        string scale = $"scale='min({maxDim},iw)':-2";
+        string input = item.AbsolutePath;
+        string seekArg = isVideo
+            ? $"-ss {seconds.ToString("F2", System.Globalization.CultureInfo.InvariantCulture)} "
+            : string.Empty;
+        string arguments =
+            $"-hide_banner -loglevel error {seekArg}-i \"{input}\" -frames:v 1 -vf \"{scale}\" -q:v 4 -y \"{tmpPath}\"";
+
+        System.Diagnostics.ProcessStartInfo startInfo = new()
+        {
+            FileName = ffmpegPath,
+            Arguments = arguments,
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            RedirectStandardError = true,
+            RedirectStandardOutput = false
+        };
+
+        try
+        {
+            using System.Diagnostics.Process? process = System.Diagnostics.Process.Start(startInfo);
+            if (process == null)
+            {
+                return null;
+            }
+
+            _ = process.StandardError.ReadToEndAsync();
+
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+            try
+            {
+                await process.WaitForExitAsync(timeout.Token);
+            }
+            catch (OperationCanceledException)
+            {
+                try { process.Kill(true); } catch { /* best effort */ }
+                return null;
+            }
+
+            if (process.ExitCode == 0 && File.Exists(tmpPath))
+            {
+                try
+                {
+                    if (File.Exists(outPath))
+                    {
+                        File.Delete(outPath);
+                    }
+
+                    File.Move(tmpPath, outPath);
+                    return outPath;
+                }
+                catch
+                {
+                    // Un autre thread a peut-être écrit le même fichier entre-temps.
+                    return File.Exists(outPath) ? outPath : null;
+                }
+            }
+
+            return null;
+        }
+        catch
+        {
+            return null;
+        }
+        finally
+        {
+            try { if (File.Exists(tmpPath)) File.Delete(tmpPath); } catch { /* best effort */ }
+        }
     }
 
     // === Live transcode =======================================================
@@ -1592,22 +1780,44 @@ public sealed class LocalApiHost
 
     private ZipEntryMatch? FindZipEntry(string zipEntryId)
     {
-        foreach (CatalogItem zipItem in catalogStore.Load().Where(IsExistingZipItem))
+        // Parse zipentry_<zipItemId>_<entryHash>: the parent zip id is embedded, so we
+        // open ONLY that archive (resolved via the catalog) rather than scanning every
+        // zip in the library. entryHash is the trailing token (after the last '_'); the
+        // zip item id keeps its own "item_..." underscore.
+        const string prefix = "zipentry_";
+        if (!zipEntryId.StartsWith(prefix, StringComparison.Ordinal))
         {
-            using FileStream zipStream = new(
-                zipItem.AbsolutePath,
-                FileMode.Open,
-                FileAccess.Read,
-                FileShare.ReadWrite | FileShare.Delete);
-            using ZipArchive archive = new(zipStream, ZipArchiveMode.Read);
+            return null;
+        }
 
-            foreach (ZipArchiveEntry entry in archive.Entries.Where(IsSupportedZipEntry))
+        string rest = zipEntryId[prefix.Length..];
+        int lastUnderscore = rest.LastIndexOf('_');
+        if (lastUnderscore <= 0 || lastUnderscore >= rest.Length - 1)
+        {
+            return null;
+        }
+
+        string zipItemId = rest[..lastUnderscore];
+        string entryHash = rest[(lastUnderscore + 1)..];
+
+        CatalogItem? zipItem = FindCatalogItem(zipItemId);
+        if (!IsExistingZipItem(zipItem))
+        {
+            return null;
+        }
+
+        using FileStream zipStream = new(
+            zipItem!.AbsolutePath,
+            FileMode.Open,
+            FileAccess.Read,
+            FileShare.ReadWrite | FileShare.Delete);
+        using ZipArchive archive = new(zipStream, ZipArchiveMode.Read);
+
+        foreach (ZipArchiveEntry entry in archive.Entries.Where(IsSupportedZipEntry))
+        {
+            if (string.Equals(ComputeZipEntryHash(entry.FullName), entryHash, StringComparison.Ordinal))
             {
-                string candidateId = CreateZipEntryId(zipItem.Id, entry.FullName);
-                if (string.Equals(candidateId, zipEntryId, StringComparison.Ordinal))
-                {
-                    return new ZipEntryMatch(zipItem.AbsolutePath, entry.FullName);
-                }
+                return new ZipEntryMatch(zipItem.AbsolutePath, entry.FullName);
             }
         }
 
@@ -1665,12 +1875,19 @@ public sealed class LocalApiHost
         return normalized[..separatorIndex].Replace('/', '\\');
     }
 
+    // ID form: zipentry_<zipItemId>_<entryHash>. Embedding the parent zip's catalog id
+    // (instead of hashing it away) lets FindZipEntry open ONLY that one archive, instead
+    // of scanning every zip in the library to resolve a match — the old form cost seconds
+    // on the first zip-image access with a large library (~1400 zips here).
     private static string CreateZipEntryId(string zipItemId, string entryName)
     {
-        string key = $"{zipItemId}|{entryName}";
-        byte[] hash = SHA256.HashData(Encoding.UTF8.GetBytes(key));
-        string id = Convert.ToHexString(hash, 0, 8).ToLowerInvariant();
-        return $"zipentry_{id}";
+        return $"zipentry_{zipItemId}_{ComputeZipEntryHash(entryName)}";
+    }
+
+    private static string ComputeZipEntryHash(string entryName)
+    {
+        byte[] hash = SHA256.HashData(Encoding.UTF8.GetBytes(entryName));
+        return Convert.ToHexString(hash, 0, 8).ToLowerInvariant();
     }
 
     private static BrowseEntry ToSourceBrowseEntry(LibrarySource source, int itemCount)
@@ -1968,6 +2185,46 @@ public sealed class LocalApiHost
         return request.Query.TryGetValue(key, out string? value) && int.TryParse(value, out int parsed)
             ? parsed
             : fallback;
+    }
+
+    // Parses ?kinds=video,image,zip into a set. Empty/missing = no filter.
+    // Accepted values match the catalog item kinds: "video", "image", "zip".
+    private static HashSet<string> ParseKinds(ApiRequest request)
+    {
+        HashSet<string> kinds = new(StringComparer.OrdinalIgnoreCase);
+        if (request.Query.TryGetValue("kinds", out string? value) && !string.IsNullOrWhiteSpace(value))
+        {
+            foreach (string part in value.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+            {
+                kinds.Add(part);
+            }
+        }
+
+        return kinds;
+    }
+
+    private static List<BrowseEntry> FilterEntriesByKinds(List<BrowseEntry> entries, HashSet<string> allowedKinds)
+    {
+        if (allowedKinds.Count == 0)
+        {
+            return entries; // no filter requested
+        }
+
+        return entries.Where(entry => KeepForKindFilter(entry, allowedKinds)).ToList();
+    }
+
+    private static bool KeepForKindFilter(BrowseEntry entry, HashSet<string> allowedKinds)
+    {
+        // Plain directories are navigation containers -- always keep them so the
+        // user can still browse into subfolders. A ".zip" is itself an item of
+        // kind "zip"; files (video/image) are kept only when their kind matches.
+        return entry.entryType switch
+        {
+            "folder" => true,
+            "zip" => allowedKinds.Contains("zip"),
+            "file" => entry.kind != null && allowedKinds.Contains(entry.kind),
+            _ => true
+        };
     }
 
     private static string GetLocalNetworkAddress()

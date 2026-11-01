@@ -8,6 +8,12 @@
     <UseWPF>true</UseWPF>
   </PropertyGroup>
 
+  <!-- Lecture seule de la banque de vignettes SQLite du lecteur PC (Multivid VR),
+       pour resservir au casque une vignette déjà générée sans repasser par ffmpeg. -->
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Data.Sqlite" Version="9.0.0" />
+  </ItemGroup>
+
   <!-- Bundle the ffmpeg toolchain next to the app so live transcode works on any
        machine without a system-wide ffmpeg. Copied to <output>\tools\. -->
   <ItemGroup>

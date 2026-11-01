@@ -1118,8 +1118,11 @@ public sealed class LocalApiHost
             return;
         }
 
+        string contentType = cachePath.EndsWith(".png", StringComparison.OrdinalIgnoreCase)
+            ? "image/png"
+            : "image/jpeg";
         FileInfo fi = new(cachePath);
-        await WriteFileStreamAsync(stream, request, cachePath, fi.Length, "image/jpeg");
+        await WriteFileStreamAsync(stream, request, cachePath, fi.Length, contentType);
     }
 
     private async Task<string?> EnsureThumbnailCachedAsync(CatalogItem item, double seconds, int maxDim, bool isVideo)
@@ -1130,12 +1133,41 @@ public sealed class LocalApiHost
             return null;
         }
 
-        string outPath = Path.Combine(dir, ThumbnailCacheKey(item, seconds, maxDim, isVideo) + ".jpg");
-        if (File.Exists(outPath))
+        string baseKey = ThumbnailCacheKey(item, seconds, maxDim, isVideo);
+        string jpgPath = Path.Combine(dir, baseKey + ".jpg");
+        string pngPath = Path.Combine(dir, baseKey + ".png");
+        if (File.Exists(jpgPath)) return jpgPath;
+        if (File.Exists(pngPath)) return pngPath;
+
+        // 1) Banque de vignettes du lecteur PC : déjà extraite ? (match par nom de fichier,
+        //    ~55 000 fichiers déjà couverts). Sert instantanément, sans ffmpeg.
+        try
         {
-            return outPath;
+            byte[]? bankPng = PlayerThumbnailBank.TryGetByFileName(item.FileName);
+            if (bankPng != null && bankPng.Length > 0)
+            {
+                string tmpBank = pngPath + "." + Guid.NewGuid().ToString("N") + ".tmp";
+                await File.WriteAllBytesAsync(tmpBank, bankPng);
+                try
+                {
+                    if (File.Exists(pngPath)) File.Delete(pngPath);
+                    File.Move(tmpBank, pngPath);
+                    return pngPath;
+                }
+                catch
+                {
+                    try { if (File.Exists(tmpBank)) File.Delete(tmpBank); } catch { /* best effort */ }
+                    if (File.Exists(pngPath)) return pngPath;
+                }
+            }
+        }
+        catch
+        {
+            // Banque indisponible/verrouillée → on tente ffmpeg.
         }
 
+        // 2) ffmpeg : génère et met en cache une JPEG.
+        string outPath = jpgPath;
         string? ffmpegPath = ResolveFfmpegPath();
         if (ffmpegPath == null)
         {

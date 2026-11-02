@@ -12,8 +12,15 @@ namespace MultividStreamer.App.Services;
 /// </summary>
 public sealed class TranscodeSettingsStore
 {
-    // Seeded on first run. wmv/flv are the known formats Quest/AVPro can't decode.
-    private static readonly string[] DefaultExtensions = { ".wmv", ".flv" };
+    // Seeded on first run. These are the formats where serving the raw file to the
+    // headset fails or seeks badly, so the streamer transcodes them to seekable fMP4:
+    //   wmv/flv/avi -> AVPro/ExoPlayer can't decode the raw codec at all;
+    //   ts/mts/m2ts -> MPEG-TS/AVCHD have no seek index, so native byte-range seek on
+    //                  the raw stream is slow/unreliable (the "seek sometimes fails" bug).
+    // mkv is deliberately NOT here: ExoPlayer decodes and seeks mkv natively, and live
+    // transcoding large H.264/H.265 mkv would be a regression. Use the per-file "force
+    // transcode" action for the rare mkv that misbehaves.
+    private static readonly string[] DefaultExtensions = { ".wmv", ".flv", ".avi", ".ts", ".mts", ".m2ts" };
     private const string DefaultEncoder = "auto";
 
     private readonly JsonSerializerOptions jsonOptions = new()

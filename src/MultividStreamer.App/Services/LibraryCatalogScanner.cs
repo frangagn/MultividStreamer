@@ -137,7 +137,10 @@ public sealed class LibraryCatalogScanner
         try
         {
             FileInfo file = new(fullPath);
-            if (!file.Exists)
+            // Skip missing and 0-byte files: empty placeholders only produce broken
+            // catalog entries (every range request returns 416, transcode yields no
+            // data). Keeping them out avoids dead items the headset can never play.
+            if (!file.Exists || file.Length == 0)
             {
                 return null;
             }

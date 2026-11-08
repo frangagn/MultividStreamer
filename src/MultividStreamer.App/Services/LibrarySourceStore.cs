@@ -67,4 +67,36 @@ public sealed class LibrarySourceStore
         string json = JsonSerializer.Serialize(sources, jsonOptions);
         File.WriteAllText(StorePath, json);
     }
+
+    // Enregistre la liste de sources courante dans un fichier choisi par l'usager
+    // (« bibliotheque » nommee, rechargeable plus tard) sans toucher au store par defaut.
+    public void SaveTo(string path, IEnumerable<LibrarySource> sources)
+    {
+        string? directory = Path.GetDirectoryName(path);
+        if (!string.IsNullOrWhiteSpace(directory))
+        {
+            Directory.CreateDirectory(directory);
+        }
+
+        string json = JsonSerializer.Serialize(sources, jsonOptions);
+        File.WriteAllText(path, json);
+    }
+
+    // Recharge une bibliotheque enregistree (meme format que le store par defaut).
+    // De-duplique par chemin. Lance en cas de fichier illisible/au mauvais format,
+    // pour que l'appelant puisse avertir l'usager plutot que d'ecraser en silence.
+    public List<LibrarySource> LoadFrom(string path)
+    {
+        string json = File.ReadAllText(path);
+        List<LibrarySource>? sources = JsonSerializer.Deserialize<List<LibrarySource>>(json, jsonOptions);
+        if (sources == null)
+        {
+            throw new InvalidDataException("Fichier de bibliotheque vide ou invalide.");
+        }
+
+        return sources
+            .Where(source => source != null && !string.IsNullOrWhiteSpace(source.Path))
+            .DistinctBy(source => source.Path, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    }
 }

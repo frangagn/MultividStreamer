@@ -1,6 +1,8 @@
 ﻿using System.Collections.ObjectModel;
+using System.IO;
 using System.Windows;
 using System.Windows.Threading;
+using Microsoft.Win32;
 using MultividStreamer.App.Models;
 using MultividStreamer.App.Selection;
 using MultividStreamer.App.Services;
@@ -16,9 +18,16 @@ public partial class MainWindow : Window
     private readonly TranscodeSettingsStore transcodeSettingsStore = new();
     private readonly ApiSettings apiSettings;
     private readonly TrustedDeviceStore trustedDeviceStore = new();
+    private readonly PairingPasswordStore pairingPasswordStore = new();
     private readonly LocalApiHost localApiHost;
     private readonly ObservableCollection<LibrarySource> sources;
     private readonly ObservableCollection<TrustedDevice> trustedDevices;
+
+    // "Casque connecte" / "Transfert en cours" sont alimentes par des evenements du
+    // serveur ; ces minuteries les remettent a l'etat inactif apres un silence (le casque
+    // a fini de parler), puisqu'il n'y a pas d'evenement explicite de deconnexion.
+    private readonly DispatcherTimer connectedResetTimer = new() { Interval = TimeSpan.FromSeconds(30) };
+    private readonly DispatcherTimer transferResetTimer = new() { Interval = TimeSpan.FromSeconds(6) };
 
     // While the API runs, a pairing code is always active and rotates on this timer
     // (same period as the code's validity), so the headset can pair at any moment
@@ -43,22 +52,27 @@ public partial class MainWindow : Window
         TranscodeEncoder.Initialize(transcodeSettings.Encoder);
 
         apiSettings = new ApiSettingsStore().LoadOrCreate();
-        localApiHost = new LocalApiHost(catalogStore, sourceStore, apiSettings, trustedDeviceStore);
+        localApiHost = new LocalApiHost(catalogStore, sourceStore, apiSettings, trustedDeviceStore, pairingPasswordStore);
         // LAN exposure is always on now (the streamer exists to serve the headset over
         // the local network); the old opt-in "Exposer sur le LAN" checkbox was removed.
         localApiHost.AllowLan = true;
         localApiHost.TrustedDevicesChanged += LocalApiHost_TrustedDevicesChanged;
         localApiHost.StreamDiagnosticsUpdated += LocalApiHost_StreamDiagnosticsUpdated;
         localApiHost.RequestLogged += LocalApiHost_RequestLogged;
+        localApiHost.DeviceSeen += LocalApiHost_DeviceSeen;
         sources = new ObservableCollection<LibrarySource>(sourceStore.Load());
         trustedDevices = new ObservableCollection<TrustedDevice>(trustedDeviceStore.Load());
         SourcesList.ItemsSource = sources;
         TrustedDevicesList.ItemsSource = trustedDevices;
         StorePathText.Text = sourceStore.StorePath;
-        ApiTokenText.Text = localApiHost.Token;
         StreamDiagnosticsText.Text = "Aucune lecture";
+        ConnectedHeadsetText.Text = "Aucun casque connecte";
+        ActiveTransferText.Text = "Aucun transfert en cours";
+        connectedResetTimer.Tick += (_, _) => { connectedResetTimer.Stop(); ConnectedHeadsetText.Text = "Aucun casque connecte"; };
+        transferResetTimer.Tick += (_, _) => { transferResetTimer.Stop(); ActiveTransferText.Text = "Aucun transfert en cours"; };
         pairingRotationTimer.Tick += (_, _) => RotatePairingCode();
         ContentRendered += MainWindow_ContentRendered;
+        UpdatePasswordStatus();
         UpdateTrustedDeviceStatus();
         UpdateApiStatus();
         UpdateStatus();
@@ -328,6 +342,190 @@ public partial class MainWindow : Window
         }
     }
 
+    private void RevokeAllDevicesButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (trustedDevices.Count == 0)
+        {
+            MessageBox.Show(this, "Aucun appareil a revoquer.", "Multivid Streamer", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        MessageBoxResult result = MessageBox.Show(
+            this,
+            $"Revoquer l'acces de TOUS les appareils ({trustedDevices.Count})? Chaque casque devra se reconnecter (code ou mot de passe).",
+            "Multivid Streamer",
+            MessageBoxButton.YesNo,
+            MessageBoxImage.Warning);
+
+        if (result != MessageBoxResult.Yes)
+        {
+            return;
+        }
+
+        int removed = trustedDeviceStore.RemoveAllDevices();
+        RefreshTrustedDevices();
+        UpdateStatus($"{removed} appareil(s) revoque(s).");
+    }
+
+    // === Bibliotheques enregistrees =========================================
+    // Sauver / recharger un jeu de sources dans un fichier .json choisi, pour ne pas
+    // avoir a tout re-selectionner a la main a chaque fois.
+
+    private void SaveLibraryButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (sources.Count == 0)
+        {
+            MessageBox.Show(this, "Aucune source a enregistrer.", "Multivid Streamer", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        SaveFileDialog dialog = new()
+        {
+            Title = "Enregistrer la bibliotheque",
+            Filter = "Bibliotheque Multivid (*.json)|*.json",
+            DefaultExt = ".json",
+            FileName = "bibliotheque.json",
+            AddExtension = true
+        };
+
+        if (dialog.ShowDialog(this) != true)
+        {
+            return;
+        }
+
+        try
+        {
+            sourceStore.SaveTo(dialog.FileName, sources);
+            UpdateStatus($"Bibliotheque enregistree: {Path.GetFileName(dialog.FileName)} ({sources.Count} source(s)).");
+        }
+        catch (Exception exception)
+        {
+            MessageBox.Show(this, $"Enregistrement echoue: {exception.Message}", "Multivid Streamer", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
+
+    private async void LoadLibraryButton_Click(object sender, RoutedEventArgs e)
+    {
+        OpenFileDialog dialog = new()
+        {
+            Title = "Charger une bibliotheque",
+            Filter = "Bibliotheque Multivid (*.json)|*.json|Tous les fichiers (*.*)|*.*",
+            CheckFileExists = true
+        };
+
+        if (dialog.ShowDialog(this) != true)
+        {
+            return;
+        }
+
+        List<LibrarySource> loaded;
+        try
+        {
+            loaded = sourceStore.LoadFrom(dialog.FileName);
+        }
+        catch (Exception exception)
+        {
+            MessageBox.Show(this, $"Chargement echoue: {exception.Message}", "Multivid Streamer", MessageBoxButton.OK, MessageBoxImage.Error);
+            return;
+        }
+
+        // Remplace les sources courantes (on ouvre une autre bibliotheque). On previent,
+        // car les sources actuelles non enregistrees seraient perdues.
+        if (sources.Count > 0)
+        {
+            MessageBoxResult confirm = MessageBox.Show(
+                this,
+                $"Remplacer les {sources.Count} source(s) actuelles par la bibliotheque chargee ({loaded.Count} source(s))?",
+                "Multivid Streamer",
+                MessageBoxButton.YesNo,
+                MessageBoxImage.Question);
+
+            if (confirm != MessageBoxResult.Yes)
+            {
+                return;
+            }
+        }
+
+        sources.Clear();
+        foreach (LibrarySource source in loaded)
+        {
+            sources.Add(source);
+        }
+
+        SaveSources();
+
+        // Rescan complet pour que le catalogue (donc le casque) reflete la nouvelle liste.
+        SetBusy(true, "Scan de la bibliotheque chargee...");
+        ScanResult result;
+        try
+        {
+            List<LibrarySource> snapshot = sources.ToList();
+            result = await Task.Run(() => catalogScanner.Scan(snapshot));
+        }
+        catch (Exception exception)
+        {
+            SetBusy(false);
+            MessageBox.Show(this, $"Le scan a echoue: {exception.Message}", "Multivid Streamer", MessageBoxButton.OK, MessageBoxImage.Error);
+            UpdateStatus("Bibliotheque chargee - scan echoue, faites Rescan.");
+            return;
+        }
+
+        catalogStore.Save(result.Items);
+        SourcesList.Items.Refresh();
+        SetBusy(false);
+        UpdateStatus($"Bibliotheque chargee: {Path.GetFileName(dialog.FileName)} - {CreateScanMessage(result)}");
+    }
+
+    // === Mot de passe d'appairage ===========================================
+
+    private void SetPasswordButton_Click(object sender, RoutedEventArgs e)
+    {
+        string password = PasswordBox.Password;
+        if (string.IsNullOrEmpty(password))
+        {
+            MessageBox.Show(this, "Entrez un mot de passe (ou utilisez Effacer pour le retirer).", "Multivid Streamer", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        pairingPasswordStore.SetPassword(password);
+        PasswordBox.Clear();
+        UpdatePasswordStatus();
+        UpdateStatus("Mot de passe de connexion defini.");
+    }
+
+    private void ClearPasswordButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (!pairingPasswordStore.HasPassword())
+        {
+            MessageBox.Show(this, "Aucun mot de passe a effacer.", "Multivid Streamer", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        MessageBoxResult result = MessageBox.Show(
+            this,
+            "Effacer le mot de passe de connexion? Le casque ne pourra plus se connecter qu'avec le code du moment.",
+            "Multivid Streamer",
+            MessageBoxButton.YesNo,
+            MessageBoxImage.Question);
+
+        if (result != MessageBoxResult.Yes)
+        {
+            return;
+        }
+
+        pairingPasswordStore.SetPassword(null);
+        PasswordBox.Clear();
+        UpdatePasswordStatus();
+        UpdateStatus("Mot de passe de connexion efface.");
+    }
+
+    private void UpdatePasswordStatus()
+    {
+        PasswordStatusText.Text = pairingPasswordStore.HasPassword()
+            ? "Mot de passe defini"
+            : "Aucun mot de passe";
+    }
+
     private void LocalApiHost_TrustedDevicesChanged(object? sender, EventArgs e)
     {
         Dispatcher.Invoke(() =>
@@ -356,6 +554,30 @@ public partial class MainWindow : Window
             $"{diagnostics.TimestampLocal:HH:mm:ss}  {diagnostics.Method}  Range: {diagnostics.Range}  " +
             $"Auth: {diagnostics.AuthSource}  Status: {diagnostics.StatusCode}  Envoye: {FormatBytes(diagnostics.BytesSent)}  " +
             $"Moyenne: {diagnostics.AverageMbps:F1} Mbps  Client: {diagnostics.ClientState}");
+
+        // Ligne « Transfert en cours » : seulement pour un vrai transfert de media
+        // (une requete /stream/ resout un nom de fichier). Remise a zero par la minuterie.
+        if (!string.IsNullOrWhiteSpace(diagnostics.ItemName))
+        {
+            Dispatcher.BeginInvoke(() =>
+            {
+                ActiveTransferText.Text =
+                    $"{diagnostics.DeviceName} • {diagnostics.ItemName} • {diagnostics.AverageMbps:F1} Mbps • {FormatBytes(diagnostics.BytesSent)}";
+                transferResetTimer.Stop();
+                transferResetTimer.Start();
+            });
+        }
+    }
+
+    // Un casque approuve vient de faire une requete autorisee (navigation, lecture...).
+    private void LocalApiHost_DeviceSeen(string deviceName)
+    {
+        Dispatcher.BeginInvoke(() =>
+        {
+            ConnectedHeadsetText.Text = $"{deviceName} (actif)";
+            connectedResetTimer.Stop();
+            connectedResetTimer.Start();
+        });
     }
 
     private void LocalApiHost_RequestLogged(string line)
@@ -405,9 +627,14 @@ public partial class MainWindow : Window
         RescanButton.IsEnabled = !isBusy;
         RemoveButton.IsEnabled = !isBusy;
         ClearLibraryButton.IsEnabled = !isBusy;
+        LoadLibraryButton.IsEnabled = !isBusy;
+        SaveLibraryButton.IsEnabled = !isBusy;
         ApiToggleButton.IsEnabled = !isBusy;
         PairingCodeButton.IsEnabled = !isBusy && localApiHost.IsRunning;
         RevokeTrustedDeviceButton.IsEnabled = !isBusy;
+        RevokeAllDevicesButton.IsEnabled = !isBusy;
+        SetPasswordButton.IsEnabled = !isBusy;
+        ClearPasswordButton.IsEnabled = !isBusy;
         SourcesList.IsEnabled = !isBusy;
         TrustedDevicesList.IsEnabled = !isBusy;
 

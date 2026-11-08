@@ -19,7 +19,9 @@ public sealed record StreamDiagnosticsSnapshot(
     int StatusCode,
     long BytesSent,
     double AverageMbps,
-    string ClientState);
+    string ClientState,
+    string DeviceName,
+    string ItemName);
 
 public sealed class LocalApiHost
 {
@@ -78,15 +80,22 @@ public sealed class LocalApiHost
     private string? pairingCode;
     private DateTime pairingExpiresUtc;
 
-    public LocalApiHost(CatalogStore catalogStore, LibrarySourceStore sourceStore, ApiSettings settings, TrustedDeviceStore trustedDeviceStore)
+    private readonly PairingPasswordStore pairingPasswordStore;
+
+    public LocalApiHost(CatalogStore catalogStore, LibrarySourceStore sourceStore, ApiSettings settings, TrustedDeviceStore trustedDeviceStore, PairingPasswordStore pairingPasswordStore)
     {
         this.catalogStore = catalogStore;
         this.sourceStore = sourceStore;
         this.settings = settings;
         this.trustedDeviceStore = trustedDeviceStore;
+        this.pairingPasswordStore = pairingPasswordStore;
     }
 
     public event EventHandler? TrustedDevicesChanged;
+
+    // Activite d'un casque approuve : nom de l'appareil a chaque requete autorisee.
+    // Sert a afficher « casque connecte » en direct (l'UI remet a zero apres un delai).
+    public event Action<string>? DeviceSeen;
 
     public event EventHandler<StreamDiagnosticsSnapshot>? StreamDiagnosticsUpdated;
 
@@ -457,6 +466,10 @@ public sealed class LocalApiHost
         return new ApiRequest(parts[0], path, headers, query);
     }
 
+    // Nom de l'appareil approuve de la requete courante, pose a l'autorisation et
+    // relu par le diagnostic de transfert (AsyncLocal : suit l'appel logique par client).
+    private static readonly AsyncLocal<string?> currentDeviceName = new();
+
     private bool IsAuthorized(ApiRequest request)
     {
         string? token = GetRequestToken(request);
@@ -467,10 +480,20 @@ public sealed class LocalApiHost
 
         if (string.Equals(token, settings.Token, StringComparison.Ordinal))
         {
+            currentDeviceName.Value = "Token interne";
+            DeviceSeen?.Invoke("Token interne");
             return true;
         }
 
-        return trustedDeviceStore.TryAuthorizeToken(token, out _);
+        if (trustedDeviceStore.TryAuthorizeToken(token, out TrustedDevice? device))
+        {
+            string name = device?.Name ?? "Casque approuve";
+            currentDeviceName.Value = name;
+            DeviceSeen?.Invoke(name);
+            return true;
+        }
+
+        return false;
     }
 
     private static string? GetRequestToken(ApiRequest request)
@@ -566,27 +589,30 @@ public sealed class LocalApiHost
             return;
         }
 
-        string? error = null;
+        string submitted = code.Trim();
+        bool matched = false;
+
+        // 1) Le code d'appairage du moment (a usage unique, consomme s'il correspond).
         lock (pairingLock)
         {
-            if (!IsPairingActiveLocked())
-            {
-                error = "pairing_inactive";
-            }
-            else if (!string.Equals(pairingCode, code.Trim(), StringComparison.Ordinal))
-            {
-                error = "invalid_code";
-            }
-            else
+            if (IsPairingActiveLocked() && string.Equals(pairingCode, submitted, StringComparison.Ordinal))
             {
                 pairingCode = null;
                 pairingExpiresUtc = default;
+                matched = true;
             }
         }
 
-        if (error != null)
+        // 2) Sinon, le mot de passe d'appairage (alternative stable, reutilisable, valable
+        //    quand personne n'est devant le PC pour lire le code qui tourne).
+        if (!matched && pairingPasswordStore.Verify(submitted))
         {
-            await WriteJsonAsync(stream, HttpStatusCode.Unauthorized, new { error });
+            matched = true;
+        }
+
+        if (!matched)
+        {
+            await WriteJsonAsync(stream, HttpStatusCode.Unauthorized, new { error = "invalid_code" });
             return;
         }
 
@@ -2462,7 +2488,35 @@ public sealed class LocalApiHost
                 (int)statusCode,
                 bytesSent,
                 averageMbps,
-                string.IsNullOrWhiteSpace(clientState) ? "OK" : clientState));
+                string.IsNullOrWhiteSpace(clientState) ? "OK" : clientState,
+                currentDeviceName.Value ?? "?",
+                ResolveItemName(request.Path)));
+    }
+
+    // Nom lisible du fichier derriere une requete /stream/{id} ou /thumb/{id}, pour
+    // l'affichage « transfert en cours ». Renvoie vide si ce n'est pas un transfert de media.
+    private string ResolveItemName(string path)
+    {
+        string? itemId = null;
+        if (path.StartsWith("/stream/", StringComparison.OrdinalIgnoreCase))
+        {
+            itemId = Uri.UnescapeDataString(path["/stream/".Length..]);
+        }
+
+        if (string.IsNullOrWhiteSpace(itemId))
+        {
+            return string.Empty;
+        }
+
+        try
+        {
+            CatalogItem? item = FindCatalogItem(itemId);
+            return item?.FileName ?? string.Empty;
+        }
+        catch (Exception)
+        {
+            return string.Empty;
+        }
     }
 
     private static double CalculateMbps(long bytesSent, TimeSpan elapsed)

@@ -14,12 +14,10 @@
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="*" />
                 <ColumnDefinition Width="Auto" />
-                <ColumnDefinition Width="Auto" />
-                <ColumnDefinition Width="Auto" />
-                <ColumnDefinition Width="Auto" />
             </Grid.ColumnDefinitions>
 
-            <StackPanel Grid.Column="0">
+            <StackPanel Grid.Column="0"
+                        VerticalAlignment="Center">
                 <TextBlock Text="Sources de bibliotheque"
                            FontSize="22"
                            FontWeight="SemiBold" />
@@ -28,40 +26,54 @@
                            Margin="0,4,0,0" />
             </StackPanel>
 
-            <Button x:Name="AddButton"
-                    Grid.Column="1"
-                    Width="118"
-                    Height="34"
-                    Margin="0,0,8,0"
-                    Click="AddButton_Click">
-                Ajouter...
-            </Button>
-
-            <Button x:Name="RescanButton"
-                    Grid.Column="2"
-                    Width="104"
-                    Height="34"
-                    Margin="0,0,8,0"
-                    Click="RescanButton_Click">
-                Rescan
-            </Button>
-
-            <Button x:Name="RemoveButton"
-                    Grid.Column="3"
-                    Width="104"
-                    Height="34"
-                    Margin="0,0,8,0"
-                    Click="RemoveButton_Click">
-                Effacer
-            </Button>
-
-            <Button x:Name="ClearLibraryButton"
-                    Grid.Column="4"
-                    Width="132"
-                    Height="34"
-                    Click="ClearLibraryButton_Click">
-                Vider bibliotheque
-            </Button>
+            <WrapPanel Grid.Column="1"
+                       Orientation="Horizontal"
+                       HorizontalAlignment="Right"
+                       VerticalAlignment="Center"
+                       MaxWidth="560">
+                <Button x:Name="AddButton"
+                        Width="110"
+                        Height="34"
+                        Margin="0,0,8,6"
+                        Click="AddButton_Click">
+                    Ajouter...
+                </Button>
+                <Button x:Name="RescanButton"
+                        Width="92"
+                        Height="34"
+                        Margin="0,0,8,6"
+                        Click="RescanButton_Click">
+                    Rescan
+                </Button>
+                <Button x:Name="RemoveButton"
+                        Width="92"
+                        Height="34"
+                        Margin="0,0,8,6"
+                        Click="RemoveButton_Click">
+                    Effacer
+                </Button>
+                <Button x:Name="LoadLibraryButton"
+                        Width="130"
+                        Height="34"
+                        Margin="0,0,8,6"
+                        Click="LoadLibraryButton_Click">
+                    Charger biblio...
+                </Button>
+                <Button x:Name="SaveLibraryButton"
+                        Width="140"
+                        Height="34"
+                        Margin="0,0,8,6"
+                        Click="SaveLibraryButton_Click">
+                    Enregistrer biblio...
+                </Button>
+                <Button x:Name="ClearLibraryButton"
+                        Width="132"
+                        Height="34"
+                        Margin="0,0,0,6"
+                        Click="ClearLibraryButton_Click">
+                    Vider bibliotheque
+                </Button>
+            </WrapPanel>
         </Grid>
 
         <StackPanel DockPanel.Dock="Bottom" Margin="0,12,0,0">
@@ -75,6 +87,7 @@
                         <ColumnDefinition Width="*" />
                     </Grid.ColumnDefinitions>
                     <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
                         <RowDefinition Height="Auto" />
                         <RowDefinition Height="Auto" />
                         <RowDefinition Height="Auto" />
@@ -100,22 +113,21 @@
                                VerticalAlignment="Center"
                                Foreground="#555" />
 
-
-                    <TextBlock Grid.Row="2"
+                    <TextBlock Grid.Row="1"
                                Grid.Column="0"
                                Margin="0,0,10,4"
                                Text="Catalogue" />
                     <TextBox x:Name="ApiCatalogUrlText"
-                             Grid.Row="2"
+                             Grid.Row="1"
                              Grid.Column="1"
                              Margin="0,0,0,4"
                              IsReadOnly="True" />
 
-                    <TextBlock Grid.Row="3"
+                    <TextBlock Grid.Row="2"
                                Grid.Column="0"
                                Margin="0,0,10,4"
-                               Text="Pairing" />
-                    <StackPanel Grid.Row="3"
+                               Text="Code de connexion" />
+                    <StackPanel Grid.Row="2"
                                 Grid.Column="1"
                                 Orientation="Horizontal"
                                 Margin="0,0,0,4">
@@ -135,32 +147,78 @@
                                    Foreground="#555" />
                     </StackPanel>
 
+                    <TextBlock Grid.Row="3"
+                               Grid.Column="0"
+                               Margin="0,0,10,4"
+                               Text="Mot de passe" />
+                    <StackPanel Grid.Row="3"
+                                Grid.Column="1"
+                                Orientation="Horizontal"
+                                Margin="0,0,0,4">
+                        <PasswordBox x:Name="PasswordBox"
+                                     Width="160"
+                                     Height="26"
+                                     Margin="0,0,8,0"
+                                     VerticalContentAlignment="Center" />
+                        <Button x:Name="SetPasswordButton"
+                                Width="118"
+                                Height="28"
+                                Margin="0,0,8,0"
+                                Click="SetPasswordButton_Click">
+                            Definir
+                        </Button>
+                        <Button x:Name="ClearPasswordButton"
+                                Width="90"
+                                Height="28"
+                                Margin="0,0,8,0"
+                                Click="ClearPasswordButton_Click">
+                            Effacer
+                        </Button>
+                        <TextBlock x:Name="PasswordStatusText"
+                                   VerticalAlignment="Center"
+                                   Foreground="#555" />
+                    </StackPanel>
+
                     <TextBlock Grid.Row="4"
                                Grid.Column="0"
-                               Margin="0,0,10,0"
-                               Text="Token" />
-                    <TextBox x:Name="ApiTokenText"
-                             Grid.Row="4"
-                             Grid.Column="1"
-                             IsReadOnly="True" />
+                               Margin="0,0,10,4"
+                               Text="Casque" />
+                    <TextBlock x:Name="ConnectedHeadsetText"
+                               Grid.Row="4"
+                               Grid.Column="1"
+                               Margin="0,0,0,4"
+                               VerticalAlignment="Center"
+                               Foreground="#555" />
 
                     <TextBlock Grid.Row="5"
                                Grid.Column="0"
-                               Margin="0,8,10,4"
-                               Text="Streaming" />
-                    <TextBlock x:Name="StreamDiagnosticsText"
+                               Margin="0,0,10,4"
+                               Text="Transfert" />
+                    <TextBlock x:Name="ActiveTransferText"
                                Grid.Row="5"
                                Grid.Column="1"
-                               Margin="0,8,0,4"
+                               Margin="0,0,0,4"
                                VerticalAlignment="Center"
                                Foreground="#555"
                                TextWrapping="Wrap" />
 
                     <TextBlock Grid.Row="6"
                                Grid.Column="0"
+                               Margin="0,8,10,4"
+                               Text="Journal" />
+                    <TextBlock x:Name="StreamDiagnosticsText"
+                               Grid.Row="6"
+                               Grid.Column="1"
+                               Margin="0,8,0,4"
+                               VerticalAlignment="Center"
+                               Foreground="#555"
+                               TextWrapping="Wrap" />
+
+                    <TextBlock Grid.Row="7"
+                               Grid.Column="0"
                                Margin="0,8,10,0"
                                Text="Devices" />
-                    <Grid Grid.Row="6"
+                    <Grid Grid.Row="7"
                           Grid.Column="1"
                           Margin="0,8,0,0">
                         <Grid.RowDefinitions>
@@ -169,6 +227,7 @@
                         </Grid.RowDefinitions>
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
                             <ColumnDefinition Width="Auto" />
                         </Grid.ColumnDefinitions>
 
@@ -186,11 +245,20 @@
                                 Click="RevokeTrustedDeviceButton_Click">
                             Revoquer
                         </Button>
+                        <Button x:Name="RevokeAllDevicesButton"
+                                Grid.Row="0"
+                                Grid.Column="2"
+                                Width="118"
+                                Height="26"
+                                Margin="8,0,0,4"
+                                Click="RevokeAllDevicesButton_Click">
+                            Revoquer tout
+                        </Button>
 
                         <ListView x:Name="TrustedDevicesList"
                                   Grid.Row="1"
                                   Grid.Column="0"
-                                  Grid.ColumnSpan="2"
+                                  Grid.ColumnSpan="3"
                                   Height="92">
                             <ListView.View>
                                 <GridView>

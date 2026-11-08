@@ -189,6 +189,23 @@ public sealed class TrustedDeviceStore
         }
     }
 
+    // Revoque TOUS les appareils d'un coup. Renvoie le nombre d'appareils retires.
+    public int RemoveAllDevices()
+    {
+        lock (syncRoot)
+        {
+            List<TrustedDevice> devices = LoadCore();
+            int count = devices.Count;
+            if (count == 0)
+            {
+                return 0;
+            }
+
+            SaveCore(new List<TrustedDevice>());
+            return count;
+        }
+    }
+
     public bool TryAuthorizeToken(string token, out TrustedDevice? authorizedDevice)
     {
         authorizedDevice = null;
@@ -290,5 +307,113 @@ public sealed class TrustedDeviceStore
         byte[] rightBytes = System.Text.Encoding.UTF8.GetBytes(right);
         return leftBytes.Length == rightBytes.Length
             && CryptographicOperations.FixedTimeEquals(leftBytes, rightBytes);
+    }
+}
+
+// Mot de passe d'appairage : une alternative STABLE au code qui tourne. L'usager de
+// l'ordinateur le definit une fois (saisi cache) ; le casque peut ensuite se connecter
+// avec ce mot de passe quand personne n'est devant le PC pour lire le code du moment.
+// On ne garde que le hache (SHA-256, sale), jamais le mot de passe en clair. Outil LAN :
+// pas de KDF lent, mais sel + hache suffisent a ne pas stocker le secret en clair.
+public sealed class PairingPasswordStore
+{
+    private readonly object syncRoot = new();
+    private readonly JsonSerializerOptions jsonOptions = new() { WriteIndented = true };
+
+    public string StorePath { get; }
+
+    public PairingPasswordStore()
+    {
+        string appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+        StorePath = Path.Combine(appData, "Multivid Streamer", "pairing-password.json");
+    }
+
+    private sealed record Record(string Salt, string Hash);
+
+    public bool HasPassword()
+    {
+        lock (syncRoot)
+        {
+            return Load() != null;
+        }
+    }
+
+    // Definit (ou efface si vide/null) le mot de passe d'appairage.
+    public void SetPassword(string? plain)
+    {
+        lock (syncRoot)
+        {
+            string? directory = Path.GetDirectoryName(StorePath);
+            if (!string.IsNullOrWhiteSpace(directory))
+            {
+                Directory.CreateDirectory(directory);
+            }
+
+            if (string.IsNullOrEmpty(plain))
+            {
+                if (File.Exists(StorePath))
+                {
+                    File.Delete(StorePath);
+                }
+                return;
+            }
+
+            byte[] salt = RandomNumberGenerator.GetBytes(16);
+            Record record = new(Convert.ToHexString(salt).ToLowerInvariant(), HashWithSalt(plain, salt));
+            File.WriteAllText(StorePath, JsonSerializer.Serialize(record, jsonOptions));
+        }
+    }
+
+    // Vrai si le candidat correspond au mot de passe defini (false si aucun mot de passe).
+    public bool Verify(string? candidate)
+    {
+        if (string.IsNullOrEmpty(candidate))
+        {
+            return false;
+        }
+
+        lock (syncRoot)
+        {
+            Record? record = Load();
+            if (record == null)
+            {
+                return false;
+            }
+
+            byte[] salt = Convert.FromHexString(record.Salt);
+            string candidateHash = HashWithSalt(candidate, salt);
+            byte[] a = System.Text.Encoding.UTF8.GetBytes(candidateHash);
+            byte[] b = System.Text.Encoding.UTF8.GetBytes(record.Hash);
+            return a.Length == b.Length && CryptographicOperations.FixedTimeEquals(a, b);
+        }
+    }
+
+    private Record? Load()
+    {
+        if (!File.Exists(StorePath))
+        {
+            return null;
+        }
+
+        try
+        {
+            Record? record = JsonSerializer.Deserialize<Record>(File.ReadAllText(StorePath), jsonOptions);
+            return record == null || string.IsNullOrWhiteSpace(record.Hash) || string.IsNullOrWhiteSpace(record.Salt)
+                ? null
+                : record;
+        }
+        catch (Exception)
+        {
+            return null;
+        }
+    }
+
+    private static string HashWithSalt(string plain, byte[] salt)
+    {
+        byte[] plainBytes = System.Text.Encoding.UTF8.GetBytes(plain);
+        byte[] combined = new byte[salt.Length + plainBytes.Length];
+        Buffer.BlockCopy(salt, 0, combined, 0, salt.Length);
+        Buffer.BlockCopy(plainBytes, 0, combined, salt.Length, plainBytes.Length);
+        return Convert.ToHexString(SHA256.HashData(combined)).ToLowerInvariant();
     }
 }

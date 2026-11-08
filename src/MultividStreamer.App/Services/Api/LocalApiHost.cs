@@ -1258,7 +1258,11 @@ public sealed class LocalApiHost
 
     // The video encoder is chosen per machine by TranscodeEncoder (NVENC/QSV/AMF/CPU),
     // so the same build uses hardware encode on an RTX desktop, an Arc laptop, etc.
-    private const string TranscodeAudioArgs = "-c:a aac -b:a 192k";
+    // -ac 2 : l'encodeur AAC natif de ffmpeg 8.x refuse certaines sources MONO (ex. audio speex
+    // 1 canal des .flv) avec « Unsupported channel layout "1 channels" », ce qui fait echouer tout
+    // le transcodage (sortie 0 octet -> le casque affiche « codec not supported »). Forcer la stereo
+    // contourne le probleme (8 nov. 2026, diagnostic sur un .flv h264+speex 320x240).
+    private const string TranscodeAudioArgs = "-ac 2 -c:a aac -b:a 192k";
 
     private static string? ResolveFfmpegPath()
     {
